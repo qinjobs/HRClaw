@@ -101,7 +101,8 @@ The private version adds the workflow depth and integrations needed for live hir
 ## More Docs
 
 - [Chinese homepage](README.zh-CN.md)
-- [GitHub settings copy deck](docs/github-settings.md)
+- [Chinese deployment guide](docs/中文说明书-部署与使用.md)
+- [Intranet deployment checklist](docs/内网部署实施清单.md)
 - [Quickstart](skills/jd-scorecard/docs/quickstart.md)
 - [FAQ](skills/jd-scorecard/docs/faq.md)
 - [Limitations](skills/jd-scorecard/docs/limitations.md)

@@ -101,7 +101,8 @@ cp -R skills/jd-scorecard ~/.codex/skills/
 ## 更多文档
 
 - [英文首页](README.md)
-- [GitHub 设置抄写页](docs/github-settings.md)
+- [中文说明书-部署与使用](docs/中文说明书-部署与使用.md)
+- [内网部署实施清单](docs/内网部署实施清单.md)
 - [快速上手](skills/jd-scorecard/docs/quickstart.md)
 - [FAQ](skills/jd-scorecard/docs/faq.md)
 - [限制说明](skills/jd-scorecard/docs/limitations.md)

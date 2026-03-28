@@ -5,7 +5,7 @@
 ## 1. 推荐使用顺序
 
 1. 阅读完整手册：
-   `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/第一阶段第二阶段完整安装部署手册.md`
+   `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/中文说明书-部署与使用.md`
 2. 如为公司内网上线，先对照：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/内网部署实施清单.md`
 3. 如果部署到 Windows 10 单机，优先使用：
