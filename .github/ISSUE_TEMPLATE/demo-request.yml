@@ -1,0 +1,99 @@
+name: Demo request
+description: Request an English demo, public trial, or private pilot
+title: "[Demo request] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include enough detail to help us decide whether the public skill or private product is the right fit.
+
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: What do you need most
+      options:
+        - English demo (recommended)
+        - Public trial
+        - Private pilot
+        - Just discussing the use case
+    validations:
+      required: true
+
+  - type: input
+    id: company
+    attributes:
+      label: Company
+      placeholder: e.g. Acme Inc.
+    validations:
+      required: true
+
+  - type: input
+    id: role
+    attributes:
+      label: Hiring role
+      placeholder: e.g. QA engineer / Python backend / content QC
+    validations:
+      required: true
+
+  - type: textarea
+    id: volume
+    attributes:
+      label: Daily volume
+      description: Roughly how many JDs or resumes do you screen each day? Who screens them today?
+      placeholder: e.g. 200 resumes/day, 2 recruiters doing manual screening
+    validations:
+      required: true
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: Biggest pain point
+      description: Is it speed, consistency, BOSS workflow friction, or something else?
+      placeholder: e.g. Recruiters spend 4 hours/day repeating the same screening work
+    validations:
+      required: true
+
+  - type: input
+    id: pilot_cycle
+    attributes:
+      label: Expected pilot cycle
+      description: e.g. 2 weeks, 30 days, one quarter
+      placeholder: e.g. 30 days
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: needs
+    attributes:
+      label: What do you want
+      options:
+        - label: Public trial
+        - label: English demo
+        - label: Private pilot
+        - label: BOSS integration
+        - label: Internal deployment
+        - label: Team calibration
+
+  - type: textarea
+    id: jd
+    attributes:
+      label: JD snippet or text
+      description: Paste a short JD or summarize the must-have requirements.
+      placeholder: Paste the core requirements here.
+
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: GitHub username, email, or WeChat
+      placeholder: hrclaw@126.com
+      value: hrclaw@126.com
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else we should know.
+      placeholder: Add any extra context here.

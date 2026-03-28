@@ -1,0 +1,99 @@
+name: 中文 demo 预约
+description: 预约中文演示、公开版试用或私有版试点
+title: "[中文 demo] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量把信息填完整。填得越具体，越容易快速安排演示或试点方案。
+
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: 这次主要想要什么
+      options:
+        - 中文 demo（推荐）
+        - 公开版试用
+        - 私有版试点
+        - 先聊需求
+    validations:
+      required: true
+
+  - type: input
+    id: company
+    attributes:
+      label: 公司名
+      placeholder: 例如：XX 科技
+    validations:
+      required: true
+
+  - type: input
+    id: role
+    attributes:
+      label: 招聘岗位
+      placeholder: 例如：测试工程师 / Python 后端 / 内容质检
+    validations:
+      required: true
+
+  - type: textarea
+    id: volume
+    attributes:
+      label: 每天处理量
+      description: 每天大概会收到多少 JD / 简历？现在谁在筛？
+      placeholder: 例如：每天 200 份简历，2 名 HR 手动初筛
+    validations:
+      required: true
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: 当前最痛的地方
+      description: 是筛人太慢、标准不一致，还是 BOSS 里反复点太多？
+      placeholder: 例如：候选人太多，HR 每天花 4 小时重复筛选
+    validations:
+      required: true
+
+  - type: input
+    id: pilot_cycle
+    attributes:
+      label: 预计试点周期
+      description: 例如 2 周、30 天、1 个季度
+      placeholder: 例如：30 天
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: needs
+    attributes:
+      label: 你更需要什么
+      options:
+        - label: 公开版试用
+        - label: 中文 demo
+        - label: 私有版试点
+        - label: BOSS 集成
+        - label: 内网部署
+        - label: 团队校准
+
+  - type: textarea
+    id: jd
+    attributes:
+      label: 附一段 JD 或截图文字
+      description: 贴一小段即可，最好包含岗位名、经验、地点和必须项。
+      placeholder: 粘贴一小段 JD，或者概括出核心要求。
+
+  - type: input
+    id: contact
+    attributes:
+      label: 联系方式
+      description: GitHub 用户名、邮箱或微信
+      placeholder: hrclaw@126.com
+      value: hrclaw@126.com
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 其他说明
+      description: 例如：希望 30 天内试点、能否安排线上演示。
+      placeholder: 其他补充信息写这里。

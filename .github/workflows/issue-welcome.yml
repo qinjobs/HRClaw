@@ -1,0 +1,57 @@
+name: Welcome demo issues
+
+on:
+  issues:
+    types:
+      - opened
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Reply to demo requests
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.issue.title || "";
+            const body = context.payload.issue.body || "";
+            const text = `${title}\n${body}`;
+
+            const isChinese = text.includes("中文 demo") || text.includes("中文 demo 预约");
+            const isEnglish = text.includes("Demo request") || text.includes("[Demo request]");
+
+            if (!isChinese && !isEnglish) {
+              core.info("Skipping non-demo issue.");
+              return;
+            }
+
+            const reply = isChinese
+              ? [
+                  "谢谢，你已经把需求发过来了。",
+                  "",
+                  "我们会先看这几个信号：岗位、量级、预计试点周期、当前筛选方式，以及是否需要 BOSS 集成或内网部署。",
+                  "",
+                  "如果你还没补全信息，可以继续完善：公司名、招聘岗位、每天处理量、预计试点周期、当前最痛点。",
+                  "",
+                  "联系方式：hrclaw@126.com",
+                ].join("\n")
+              : [
+                  "Thanks for the request.",
+                  "",
+                  "We will first look at the role, daily volume, expected pilot cycle, current screening process, and whether you need BOSS integration or internal deployment.",
+                  "",
+                  "If you want to add more context, please include the company, role, daily volume, expected pilot cycle, and biggest pain point.",
+                  "",
+                  "Contact: hrclaw@126.com",
+                ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: reply,
+            });

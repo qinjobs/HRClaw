@@ -1,0 +1,8 @@
+[project]
+name = "gpt54-boss-screening-mvp"
+version = "0.1.0"
+description = "Week 1 MVP for GPT-5.4-assisted resume screening"
+requires-python = ">=3.12"
+
+[tool.unittest]
+start-directory = "tests"

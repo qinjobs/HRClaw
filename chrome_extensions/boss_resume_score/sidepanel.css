@@ -1,0 +1,233 @@
+:root {
+  color-scheme: light;
+  --bg: #eef6ff;
+  --card: rgba(255, 255, 255, 0.92);
+  --text: #17324d;
+  --muted: #5d7288;
+  --line: rgba(23, 50, 77, 0.12);
+  --primary: #0f6fff;
+  --primary-deep: #083f9b;
+  --accent: #00a7a0;
+  --good: #0c8a4d;
+  --warn: #a66300;
+  --bad: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(680px 240px at 0% 0%, rgba(15, 111, 255, 0.18), transparent 60%),
+    radial-gradient(540px 220px at 100% 10%, rgba(0, 167, 160, 0.14), transparent 55%),
+    var(--bg);
+}
+
+.shell {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.hero h1,
+.resultHeader h2,
+.listBlock h3 {
+  margin: 0;
+}
+
+.hero {
+  display: grid;
+  gap: 6px;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--primary);
+}
+
+.subtle {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 18px 36px rgba(15, 63, 155, 0.08);
+  padding: 16px;
+}
+
+.controls,
+.trackingCard,
+.quickCard,
+.resultCard,
+.statusCard {
+  display: grid;
+  gap: 12px;
+}
+
+.field,
+.toggle {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.inlineActions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+select,
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+select,
+input,
+textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 88px;
+}
+
+.toggle {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.primary {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  color: #fff;
+}
+
+button.secondary {
+  background: rgba(15, 111, 255, 0.08);
+  color: var(--primary-deep);
+}
+
+button.compact {
+  white-space: nowrap;
+  padding-inline: 14px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.statusRow {
+  display: grid;
+  gap: 6px;
+}
+
+.label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.status,
+.value,
+.mono {
+  word-break: break-word;
+}
+
+.mono {
+  font-family: "SF Mono", "Monaco", monospace;
+  font-size: 12px;
+}
+
+.resultHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#scoreValue {
+  font-size: 44px;
+  line-height: 1;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.neutral {
+  color: var(--muted);
+  background: rgba(93, 114, 136, 0.12);
+}
+
+.good {
+  color: var(--good);
+  background: rgba(12, 138, 77, 0.12);
+}
+
+.warn {
+  color: var(--warn);
+  background: rgba(166, 99, 0, 0.14);
+}
+
+.bad {
+  color: var(--bad);
+  background: rgba(180, 35, 24, 0.12);
+}
+
+.listBlock {
+  display: grid;
+  gap: 8px;
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  display: grid;
+  gap: 6px;
+}

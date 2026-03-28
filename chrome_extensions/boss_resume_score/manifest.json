@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "BOSS 简历打分",
+  "version": "0.1.0",
+  "description": "Internal BOSS candidate detail scorer powered by the local screening backend.",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "cookies",
+    "sidePanel",
+    "scripting",
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "BOSS 简历打分"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zhipin.com/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "shared.js",
+        "content-script.js"
+      ]
+    }
+  ]
+}

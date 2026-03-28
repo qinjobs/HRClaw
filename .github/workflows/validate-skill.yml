@@ -1,0 +1,139 @@
+name: Validate skill
+
+on:
+  push:
+    paths:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "LICENSE"
+      - "SECURITY.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/validate-skill.yml"
+      - ".github/workflows/issue-welcome.yml"
+      - ".github/workflows/issue-labels.yml"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "skills/**"
+  pull_request:
+    paths:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "LICENSE"
+      - "SECURITY.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/validate-skill.yml"
+      - ".github/workflows/issue-welcome.yml"
+      - ".github/workflows/issue-labels.yml"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "skills/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "README.md"
+            "README.zh-CN.md"
+            "LICENSE"
+            "SECURITY.md"
+            "CHANGELOG.md"
+            ".github/ISSUE_TEMPLATE/config.yml"
+            ".github/ISSUE_TEMPLATE/demo-request.yml"
+            ".github/ISSUE_TEMPLATE/zh-cn-demo-request.yml"
+            ".github/workflows/issue-welcome.yml"
+            ".github/workflows/issue-labels.yml"
+            "skills/jd-scorecard/SKILL.md"
+            "skills/jd-scorecard/agents/openai.yaml"
+            "skills/jd-scorecard/assets/icon-small.jpg"
+            "skills/jd-scorecard/assets/demo.gif"
+            "skills/jd-scorecard/assets/demo-zh.gif"
+            "skills/jd-scorecard/assets/logo.jpg"
+            "skills/jd-scorecard/prompts/jd-to-scorecard.md"
+            "skills/jd-scorecard/prompts/resume-score.md"
+            "skills/jd-scorecard/prompts/interview-questions.md"
+            "skills/jd-scorecard/templates/scorecard.json"
+            "skills/jd-scorecard/templates/scorecard.md"
+            "skills/jd-scorecard/templates/chat-scorecard.md"
+            "skills/jd-scorecard/templates/resume-score.json"
+            "skills/jd-scorecard/templates/resume-score.md"
+            "skills/jd-scorecard/templates/chat-resume-score.md"
+            "skills/jd-scorecard/scripts/generate_demo.py"
+            "skills/jd-scorecard/examples/qa-output.json"
+            "skills/jd-scorecard/examples/python-output.json"
+            "skills/jd-scorecard/examples/caption-output.json"
+            "skills/jd-scorecard/examples/test-engineer-jd.txt"
+            "skills/jd-scorecard/examples/test-engineer-output.json"
+            "skills/jd-scorecard/examples/test-engineer-resume.txt"
+            "skills/jd-scorecard/examples/test-engineer-resume-score.json"
+            "skills/jd-scorecard/examples/test-engineer-scorecard-chat.md"
+            "skills/jd-scorecard/examples/test-engineer-resume-score-chat.md"
+          )
+
+          missing=0
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::Missing required file"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Validate JSON files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = [
+              Path("skills/jd-scorecard/templates/scorecard.json"),
+              Path("skills/jd-scorecard/templates/resume-score.json"),
+              Path("skills/jd-scorecard/examples/qa-output.json"),
+              Path("skills/jd-scorecard/examples/python-output.json"),
+              Path("skills/jd-scorecard/examples/caption-output.json"),
+              Path("skills/jd-scorecard/examples/test-engineer-output.json"),
+              Path("skills/jd-scorecard/examples/test-engineer-resume-score.json"),
+          ]
+
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  raise SystemExit(f"{path} must contain a JSON object")
+
+          print("JSON validation passed")
+          PY
+
+      - name: Validate SKILL metadata
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("skills/jd-scorecard/SKILL.md").read_text(encoding="utf-8")
+          if not text.startswith("---\n"):
+              raise SystemExit("SKILL.md must start with front matter")
+
+          parts = text.split("---\n", 2)
+          if len(parts) < 3:
+              raise SystemExit("SKILL.md front matter is malformed")
+
+          front_matter = parts[1]
+          for key in ("name:", "description:"):
+              if key not in front_matter:
+                  raise SystemExit(f"SKILL.md missing required key: {key}")
+
+          if "name: jd-scorecard" not in front_matter:
+              raise SystemExit("SKILL.md must use the jd-scorecard name")
+
+          print("SKILL metadata validation passed")
+          PY

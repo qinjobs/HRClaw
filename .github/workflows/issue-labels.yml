@@ -1,0 +1,138 @@
+name: Label demo issues
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Normalize demo labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const title = issue.title || "";
+            const body = issue.body || "";
+            const text = `${title}\n${body}`;
+            const existingLabels = (issue.labels || []).map((label) => label.name);
+            const managedLabels = new Set([
+              "lang-cn",
+              "lang-en",
+              "demo-request",
+              "public-trial",
+              "private-pilot",
+              "needs-triage",
+            ]);
+
+            const hasChineseMarker =
+              title.includes("[中文 demo]") ||
+              text.includes("中文 demo 预约") ||
+              text.includes("公司名") ||
+              text.includes("招聘岗位") ||
+              text.includes("每天处理量") ||
+              text.includes("预计试点周期") ||
+              /[\u4e00-\u9fff]/.test(text);
+
+            const hasEnglishMarker =
+              title.includes("[Demo request]") ||
+              text.includes("Demo request") ||
+              text.includes("Company") ||
+              text.includes("Hiring role") ||
+              text.includes("Daily volume") ||
+              text.includes("Expected pilot cycle");
+
+            const existingLanguageLabel = existingLabels.find((name) => name === "lang-cn" || name === "lang-en") || null;
+            const existingPilotLabel = existingLabels.find((name) => name === "public-trial" || name === "private-pilot") || null;
+
+            const isDemoIssue = hasChineseMarker || hasEnglishMarker || Boolean(existingLanguageLabel) || Boolean(existingPilotLabel);
+            if (!isDemoIssue) {
+              core.info("Skipping non-demo issue.");
+              return;
+            }
+
+            const needsPrivatePilot =
+              /私有版试点|Private pilot|BOSS 集成|BOSS integration|内网部署|Internal deployment|团队校准|Team calibration/i.test(text);
+
+            const languageLabel =
+              hasChineseMarker && !hasEnglishMarker
+                ? "lang-cn"
+                : hasEnglishMarker && !hasChineseMarker
+                  ? "lang-en"
+                  : existingLanguageLabel || (/[一-鿿]/.test(text) ? "lang-cn" : "lang-en");
+
+            const pilotLabel = needsPrivatePilot ? "private-pilot" : existingPilotLabel || "public-trial";
+
+            const labelDefinitions = {
+              "lang-cn": {
+                color: "A020F0",
+                description: "Chinese-language demo request",
+              },
+              "lang-en": {
+                color: "1D76DB",
+                description: "English-language demo request",
+              },
+              "demo-request": {
+                color: "0E8A16",
+                description: "Public demo or pilot request",
+              },
+              "public-trial": {
+                color: "5319E7",
+                description: "Public skill trial or open demo",
+              },
+              "private-pilot": {
+                color: "D93F0B",
+                description: "Private pilot or internal deployment request",
+              },
+              "needs-triage": {
+                color: "FBCA04",
+                description: "Needs human review",
+              },
+            };
+
+            for (const [name, metadata] of Object.entries(labelDefinitions)) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+
+                try {
+                  await github.rest.issues.createLabel({ owner, repo, name, ...metadata });
+                } catch (createError) {
+                  if (createError.status !== 422) {
+                    throw createError;
+                  }
+                }
+              }
+            }
+
+            const desiredLabels = [
+              "demo-request",
+              "needs-triage",
+              languageLabel,
+              pilotLabel,
+            ];
+
+            const labels = [
+              ...new Set([
+                ...existingLabels.filter((name) => !managedLabels.has(name)),
+                ...desiredLabels,
+              ]),
+            ];
+
+            await github.rest.issues.setLabels({
+              owner,
+              repo,
+              issue_number: issue.number,
+              labels,
+            });

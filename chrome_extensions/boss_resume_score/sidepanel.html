@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOSS 简历打分</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">筛选后端</p>
+      <h1>BOSS 简历打分</h1>
+      <p class="subtle">读取当前候选人详情页，并调用可配置的筛选后端进行即时评分。</p>
+    </header>
+
+    <section class="card controls">
+      <label class="field">
+        <span>后端地址</span>
+        <div class="inlineActions">
+          <input id="backendUrlInput" type="text" placeholder="http://127.0.0.1:8080">
+          <button id="saveBackendButton" class="secondary compact" type="button">保存地址</button>
+        </div>
+      </label>
+      <label class="field">
+        <span>岗位评分卡</span>
+        <select id="jobSelect"></select>
+      </label>
+      <label class="toggle">
+        <input id="autoToggle" type="checkbox">
+        <span>候选人切换时自动打分</span>
+      </label>
+      <div class="actions">
+        <button id="scoreButton" class="primary" type="button">立即打分</button>
+        <button id="refreshButton" class="secondary" type="button">重新计算</button>
+      </div>
+    </section>
+
+    <section class="card statusCard">
+      <div class="statusRow">
+        <span class="label">状态</span>
+        <span id="statusText" class="status neutral">等待识别 BOSS 候选人详情页</span>
+      </div>
+      <div class="statusRow">
+        <span class="label">候选人</span>
+        <span id="candidateText" class="value">-</span>
+      </div>
+      <div class="statusRow">
+        <span class="label">页面</span>
+        <span id="pageText" class="value mono">-</span>
+      </div>
+    </section>
+
+    <section class="card trackingCard">
+      <div class="resultHeader">
+        <div>
+          <p class="eyebrow">入库与跟踪</p>
+          <h2 id="trackingTitle">等待入库</h2>
+        </div>
+        <span id="trackingPill" class="pill neutral">未入库</span>
+      </div>
+      <p id="trackingMeta" class="subtle">识别到稳定详情页后会自动入库，随后可直接保存跟踪状态。</p>
+      <div class="statusRow">
+        <span class="label">候选人 ID</span>
+        <span id="candidateIdText" class="mono">-</span>
+      </div>
+      <label class="field">
+        <span>跟踪状态</span>
+        <select id="stageSelect"></select>
+      </label>
+      <label class="field">
+        <span>沟通结果</span>
+        <input id="contactResultInput" type="text" placeholder="已回复 / 待确认 / 无回复">
+      </label>
+      <label class="field">
+        <span>下次跟进时间</span>
+        <input id="followUpInput" type="datetime-local">
+      </label>
+      <label class="field">
+        <span>备注</span>
+        <textarea id="stageNotesInput" rows="3" placeholder="记录简历判断、沟通情况或复核备注"></textarea>
+      </label>
+      <div class="actions">
+        <button id="saveStageButton" class="primary" type="button">保存状态</button>
+        <button id="syncCandidateButton" class="secondary" type="button">刷新入库</button>
+      </div>
+    </section>
+
+    <section class="card quickCard">
+      <div class="resultHeader">
+        <div>
+          <p class="eyebrow">JD 速览</p>
+          <h2 id="quickFitTitle">等待识别</h2>
+        </div>
+        <span id="quickFitPill" class="pill neutral">待识别</span>
+      </div>
+      <p id="quickFitMeta" class="subtle">本地秒级规则，不等待后端模型。</p>
+      <div class="listBlock">
+        <h3>命中证据</h3>
+        <ul id="quickFitMatchList" class="list"></ul>
+      </div>
+      <div class="listBlock">
+        <h3>主要缺口</h3>
+        <ul id="quickFitGapList" class="list"></ul>
+      </div>
+    </section>
+
+    <section class="card resultCard">
+      <div class="resultHeader">
+        <div>
+          <p class="eyebrow">最新结果</p>
+          <h2 id="scoreValue">-</h2>
+        </div>
+        <span id="decisionPill" class="pill neutral">待处理</span>
+      </div>
+      <p id="resultMeta" class="subtle">暂时还没有打分结果。</p>
+      <div class="listBlock">
+        <h3>主要原因</h3>
+        <ul id="reasonList" class="list"></ul>
+      </div>
+      <div class="listBlock">
+        <h3>维度分</h3>
+        <ul id="dimensionList" class="list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="shared.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

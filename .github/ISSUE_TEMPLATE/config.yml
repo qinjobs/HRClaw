@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 直接邮件联系
+    url: mailto:hrclaw@126.com
+    about: 如果你不方便用 GitHub Issue，可以直接发邮件到 hrclaw@126.com

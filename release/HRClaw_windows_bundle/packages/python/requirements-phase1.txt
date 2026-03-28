@@ -1,0 +1,5 @@
+openai
+playwright
+qdrant-client
+requests
+pypdf
