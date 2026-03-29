@@ -93,19 +93,20 @@ The private version adds the workflow depth and integrations needed for live hir
 - [Skill definition](skills/jd-scorecard/SKILL.md)
 - [JD prompt](skills/jd-scorecard/prompts/jd-to-scorecard.md)
 - [Resume prompt](skills/jd-scorecard/prompts/resume-score.md)
+- [Skill references](skills/jd-scorecard/references/)
 - [Chat scorecard template](skills/jd-scorecard/templates/chat-scorecard.md)
 - [Chat resume template](skills/jd-scorecard/templates/chat-resume-score.md)
 - [Examples](skills/jd-scorecard/examples/)
 - [Validation workflow](.github/workflows/validate-skill.yml)
 
-## More Docs
+## Skill References
 
 - [Chinese homepage](README.zh-CN.md)
 - [Chinese deployment guide](docs/中文说明书-部署与使用.md)
 - [Intranet deployment checklist](docs/内网部署实施清单.md)
-- [Quickstart](skills/jd-scorecard/docs/quickstart.md)
-- [FAQ](skills/jd-scorecard/docs/faq.md)
-- [Limitations](skills/jd-scorecard/docs/limitations.md)
+- [Quickstart](skills/jd-scorecard/references/quickstart.md)
+- [FAQ](skills/jd-scorecard/references/faq.md)
+- [Limitations](skills/jd-scorecard/references/limitations.md)
 
 ## Contact
 

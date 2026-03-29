@@ -99,6 +99,9 @@ If the user provides a JD and a resume together, generate the scorecard first, t
 
 ## References
 
+- `references/quickstart.md`
+- `references/faq.md`
+- `references/limitations.md`
 - `prompts/jd-to-scorecard.md`
 - `prompts/resume-score.md`
 - `prompts/interview-questions.md`

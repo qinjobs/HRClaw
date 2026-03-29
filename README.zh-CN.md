@@ -93,19 +93,20 @@ cp -R skills/jd-scorecard ~/.codex/skills/
 - [Skill 定义](skills/jd-scorecard/SKILL.md)
 - [JD 提示词](skills/jd-scorecard/prompts/jd-to-scorecard.md)
 - [简历打分提示词](skills/jd-scorecard/prompts/resume-score.md)
+- [技能包参考](skills/jd-scorecard/references/)
 - [飞书/钉钉版评分卡模板](skills/jd-scorecard/templates/chat-scorecard.md)
 - [飞书/钉钉版简历打分模板](skills/jd-scorecard/templates/chat-resume-score.md)
 - [示例目录](skills/jd-scorecard/examples/)
 - [校验工作流](.github/workflows/validate-skill.yml)
 
-## 更多文档
+## 技能包参考
 
 - [英文首页](README.md)
 - [中文说明书-部署与使用](docs/中文说明书-部署与使用.md)
 - [内网部署实施清单](docs/内网部署实施清单.md)
-- [快速上手](skills/jd-scorecard/docs/quickstart.md)
-- [FAQ](skills/jd-scorecard/docs/faq.md)
-- [限制说明](skills/jd-scorecard/docs/limitations.md)
+- [快速上手](skills/jd-scorecard/references/quickstart.md)
+- [FAQ](skills/jd-scorecard/references/faq.md)
+- [限制说明](skills/jd-scorecard/references/limitations.md)
 
 ## 联系方式
 
