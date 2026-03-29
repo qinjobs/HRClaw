@@ -104,6 +104,7 @@ The private version adds the workflow depth and integrations needed for live hir
 - [Chinese homepage](README.zh-CN.md)
 - [Chinese deployment guide](docs/中文说明书-部署与使用.md)
 - [Intranet deployment checklist](docs/内网部署实施清单.md)
+- [CLAWHUB publish checklist](CLAWHUB_PUBLISH_CHECKLIST.md)
 - [Quickstart](skills/jd-scorecard/references/quickstart.md)
 - [FAQ](skills/jd-scorecard/references/faq.md)
 - [Limitations](skills/jd-scorecard/references/limitations.md)

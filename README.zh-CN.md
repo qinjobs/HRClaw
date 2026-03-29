@@ -104,6 +104,7 @@ cp -R skills/jd-scorecard ~/.codex/skills/
 - [英文首页](README.md)
 - [中文说明书-部署与使用](docs/中文说明书-部署与使用.md)
 - [内网部署实施清单](docs/内网部署实施清单.md)
+- [CLAWHUB 发布检查清单](CLAWHUB_PUBLISH_CHECKLIST.md)
 - [快速上手](skills/jd-scorecard/references/quickstart.md)
 - [FAQ](skills/jd-scorecard/references/faq.md)
 - [限制说明](skills/jd-scorecard/references/limitations.md)
