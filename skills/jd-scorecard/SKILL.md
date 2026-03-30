@@ -1,14 +1,26 @@
 ---
 name: jd-scorecard
-description: Turn a job description into a structured hiring scorecard, or score a resume PDF/text against a scorecard with thresholds, interview questions, and red flags.
+description: Turn job descriptions and PDF resumes into structured hiring decisions, interview questions, and Feishu/DingTalk-friendly output.
 ---
 
 # JD Scorecard Skill
+
+HRClaw turns messy JD text and PDF resumes into recruiter-ready decisions.
+It keeps screening consistent, fast, and easy to share in team chat.
+
+把 JD 和 PDF 简历变成结构化、可执行的招聘结论。
 
 Use this skill for two related flows:
 
 - JD -> scorecard
 - Resume PDF/text -> score against a scorecard
+
+## Best for
+
+- high-volume recruiting
+- QA / Python / operations roles
+- teams that want one repeatable scoring standard
+- Feishu / DingTalk collaboration
 
 If the user gives both a JD and a resume, generate the scorecard first and then score the resume.
 
