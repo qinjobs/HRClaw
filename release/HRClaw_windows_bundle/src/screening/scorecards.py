@@ -195,6 +195,44 @@ def normalize_builtin_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _coerce_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        match = re.search(r"(\d+(?:\.\d+)?)", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+
+def _scorecard_age_range(scorecard: dict[str, Any]) -> tuple[float | None, float | None]:
+    filters = scorecard.get("filters") if isinstance(scorecard.get("filters"), dict) else {}
+    age_min = _coerce_number(scorecard.get("age_min"))
+    age_max = _coerce_number(scorecard.get("age_max"))
+    if age_min is None:
+        age_min = _coerce_number(filters.get("age_min"))
+    if age_max is None:
+        age_max = _coerce_number(filters.get("age_max"))
+    age_range = scorecard.get("age_range") if isinstance(scorecard.get("age_range"), dict) else {}
+    if age_min is None and isinstance(age_range, dict):
+        age_min = _coerce_number(age_range.get("min"))
+    if age_max is None and isinstance(age_range, dict):
+        age_max = _coerce_number(age_range.get("max"))
+    if age_min is not None and age_max is not None and age_min > age_max:
+        age_min, age_max = age_max, age_min
+    return age_min, age_max
+
+
 MOCK_CANDIDATES: dict[str, list[dict]] = {
     "qa_test_engineer_v1": [
         {

@@ -255,7 +255,7 @@
     }
     renderTrackingFromContext(payload.context);
     await syncQuickFitBadge();
-    setStatus("已识别到 BOSS 候选人详情页", "good");
+    setStatus("已识别到候选人详情页", "good");
     if (state.prefs.autoRescore && payload.context.contextKey !== state.lastAutoKey) {
       state.lastAutoKey = payload.context.contextKey;
       await triggerScore(false);

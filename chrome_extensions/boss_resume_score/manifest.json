@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "BOSS 简历打分",
+  "name": "HRClaw 浏览器采集",
   "version": "0.1.0",
-  "description": "Internal BOSS candidate detail scorer powered by the local screening backend.",
+  "description": "HRClaw browser capture layer powered by the local screening backend.",
   "minimum_chrome_version": "114",
   "permissions": [
     "cookies",
@@ -21,7 +21,7 @@
     "service_worker": "service-worker.js"
   },
   "action": {
-    "default_title": "BOSS 简历打分"
+    "default_title": "HRClaw 浏览器采集"
   },
   "side_panel": {
     "default_path": "sidepanel.html"

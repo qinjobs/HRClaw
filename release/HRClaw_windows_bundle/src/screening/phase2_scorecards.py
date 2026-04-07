@@ -50,6 +50,56 @@ def _extract_education_min(text: str) -> str | None:
     return None
 
 
+def _coerce_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        match = re.search(r"(\d+(?:\.\d+)?)", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+
+def _extract_age_range(text: str) -> tuple[float | None, float | None]:
+    raw = str(text or "")
+    compact = re.sub(r"\s+", "", raw)
+    patterns: list[tuple[str, str]] = [
+        (r"年龄[:：]?([1-6]?\d)(?:岁|周岁)?[-~—至到]([1-6]?\d)(?:岁|周岁)?", "range"),
+        (r"([1-6]?\d)(?:岁|周岁)?[-~—至到]([1-6]?\d)(?:岁|周岁)?", "range"),
+        (r"年龄[:：]?([1-6]?\d)(?:岁|周岁)?(?:及以上|以上|起|或以上)", "min"),
+        (r"([1-6]?\d)(?:岁|周岁)?(?:及以上|以上|起|或以上)", "min"),
+        (r"年龄[:：]?([1-6]?\d)(?:岁|周岁)?(?:及以下|以下|以内)", "max"),
+        (r"([1-6]?\d)(?:岁|周岁)?(?:及以下|以下|以内)", "max"),
+    ]
+    for pattern, kind in patterns:
+        match = re.search(pattern, compact, flags=re.IGNORECASE)
+        if not match:
+            continue
+        if kind == "range":
+            age_min = _coerce_number(match.group(1))
+            age_max = _coerce_number(match.group(2))
+            if age_min is not None and age_max is not None and age_min > age_max:
+                age_min, age_max = age_max, age_min
+            return age_min, age_max
+        if kind == "min":
+            return _coerce_number(match.group(1)), None
+        if kind == "max":
+            return None, _coerce_number(match.group(1))
+    return None, None
+
+
 def _extract_role_title(text: str) -> str:
     lines = [line.strip(" -*\t") for line in str(text or "").splitlines() if line.strip()]
     for line in lines[:6]:
@@ -89,6 +139,7 @@ def generate_scorecard_from_jd(jd_text: str, *, name: str | None = None) -> dict
     role_title = str(name or "").strip() or _extract_role_title(raw_text)
     location = next((city for city in KNOWN_LOCATIONS if city in raw_text), None)
     years_min = _extract_years_min(raw_text)
+    age_min, age_max = _extract_age_range(raw_text)
     education_min = _extract_education_min(raw_text)
     titles = _unique_texts([term for term in KNOWN_TITLES if term.lower() in raw_text.lower()] + [role_title])
     industries = _unique_texts([term for term in KNOWN_INDUSTRIES if term.lower() in raw_text.lower()])
@@ -112,6 +163,8 @@ def generate_scorecard_from_jd(jd_text: str, *, name: str | None = None) -> dict
             "filters": {
                 "location": location,
                 "years_min": years_min,
+                "age_min": age_min,
+                "age_max": age_max,
                 "education_min": education_min,
             },
             "must_have": must_have,
@@ -134,6 +187,7 @@ def generate_scorecard_from_jd(jd_text: str, *, name: str | None = None) -> dict
             },
             "hard_filters": {
                 "enforce_years": years_min is not None,
+                "enforce_age": age_min is not None or age_max is not None,
                 "enforce_education": education_min is not None,
                 "enforce_location": False,
                 "strict_exclude": bool(exclude),
@@ -156,6 +210,14 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
     review_min = float(thresholds.get("review_min") or 55)
     if review_min > recommend_min:
         raise ValueError("review_min 不能大于 recommend_min")
+    age_min = _coerce_number(filters.get("age_min"))
+    if age_min is None:
+        age_min = _coerce_number(payload.get("age_min"))
+    age_max = _coerce_number(filters.get("age_max"))
+    if age_max is None:
+        age_max = _coerce_number(payload.get("age_max"))
+    if age_min is not None and age_max is not None and age_min > age_max:
+        age_min, age_max = age_max, age_min
     normalized = {
         "schema_version": "phase2_scorecard_v1",
         "name": name,
@@ -165,6 +227,8 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
         "filters": {
             "location": str(filters.get("location") or "").strip() or None,
             "years_min": float(filters["years_min"]) if filters.get("years_min") not in (None, "", False) else None,
+            "age_min": age_min,
+            "age_max": age_max,
             "education_min": str(filters.get("education_min") or "").strip() or None,
         },
         "must_have": _normalize_text_list(payload.get("must_have")),
@@ -187,6 +251,7 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "hard_filters": {
             "enforce_years": bool(hard_filters.get("enforce_years", False)),
+            "enforce_age": bool(hard_filters.get("enforce_age", False)),
             "enforce_education": bool(hard_filters.get("enforce_education", False)),
             "enforce_location": bool(hard_filters.get("enforce_location", False)),
             "strict_exclude": bool(hard_filters.get("strict_exclude", False)),
@@ -248,6 +313,11 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
         years = float(years_value) if years_value is not None else None
     except (TypeError, ValueError):
         years = None
+    age_value = profile.get("age")
+    try:
+        age = float(age_value) if age_value is not None else None
+    except (TypeError, ValueError):
+        age = None
     education = str(profile.get("education_level") or "")
     location = str(profile.get("city") or profile.get("location") or "")
 
@@ -289,6 +359,19 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
     if hard_filters.get("enforce_years") and filters.get("years_min") is not None:
         if years is None or years < float(filters["years_min"]):
             hard_filter_fail_reasons.append(f"工作年限低于 {filters['years_min']} 年")
+    expected_age_min = filters.get("age_min")
+    expected_age_max = filters.get("age_max")
+    if hard_filters.get("enforce_age") and (expected_age_min is not None or expected_age_max is not None):
+        if age is None:
+            hard_filter_fail_reasons.append("年龄信息缺失")
+        elif expected_age_min is not None and expected_age_max is not None and not (
+            float(expected_age_min) <= age <= float(expected_age_max)
+        ):
+            hard_filter_fail_reasons.append(f"年龄不在 {expected_age_min}-{expected_age_max} 岁范围内")
+        elif expected_age_min is not None and age < float(expected_age_min):
+            hard_filter_fail_reasons.append(f"年龄低于 {expected_age_min} 岁")
+        elif expected_age_max is not None and age > float(expected_age_max):
+            hard_filter_fail_reasons.append(f"年龄高于 {expected_age_max} 岁")
     if hard_filters.get("enforce_education") and expected_education:
         if _education_rank(education) < _education_rank(expected_education):
             hard_filter_fail_reasons.append(f"学历低于 {expected_education}")

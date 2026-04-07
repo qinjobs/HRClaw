@@ -7,7 +7,7 @@ def phase2_page_html(username: str) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JD管理 - JD评分卡与批量导入</title>
+  <title>HRClaw - JD评分卡与批量导入</title>
   <style>
     :root {
       --ink: #19314f;
@@ -402,7 +402,7 @@ def phase2_page_html(username: str) -> str:
   <div class="top">
     <div class="brand">
       <div class="brandMark"></div>
-      <div>招聘智能筛选平台 · JD管理</div>
+      <div>HRClaw · JD评分卡</div>
     </div>
     <div class="topNav">
       <span>用户：__USERNAME__</span>

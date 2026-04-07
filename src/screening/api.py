@@ -374,7 +374,7 @@ def _bool_query_param(value: str | None) -> bool | None:
 
 
 def _login_page_html(next_path: str) -> str:
-    safe_next = next_path if next_path.startswith("/") else "/hr/tasks"
+    safe_next = next_path if next_path.startswith("/") else "/hr/trial"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -2975,14 +2975,14 @@ def handle_request(handler):
 
     if method == "GET" and path == "/":
         if _current_user(handler):
-            return _redirect("/hr/tasks")
+            return _redirect("/hr/trial")
         return _redirect("/login")
 
     if method == "GET" and path == "/login":
         if _current_user(handler):
-            return _redirect("/hr/tasks")
+            return _redirect("/hr/trial")
         query = parse_qs(parsed.query or "")
-        next_path = (query.get("next") or ["/hr/tasks"])[0]
+        next_path = (query.get("next") or ["/hr/trial"])[0]
         shell = _admin_frontend_shell(
             title="登录 - HRClaw",
             page_key="login",
@@ -3121,6 +3121,24 @@ def handle_request(handler):
         if shell:
             return _html(HTTPStatus.OK, shell)
         return _html(HTTPStatus.OK, _task_runner_page_html(username))
+
+    if method == "GET" and path == "/hr/trial":
+        username = _current_user(handler) or AUTH_USERNAME
+        shell = _admin_frontend_shell(
+            title="试点中心 - HRClaw",
+            page_key="trial",
+            fallback_heading="试点中心",
+            fallback_description="把 JD 评分卡、简历导入和 Chrome 浏览器采集收拢到一页，方便 HR 直接启动试点。",
+            current_path=path,
+            username=username,
+            user_role=_current_user_role(handler),
+        )
+        if shell:
+            return _html(HTTPStatus.OK, shell)
+        return _html(
+            HTTPStatus.OK,
+            """<!doctype html><html><body><h1>试点中心</h1><p>请构建最新后台前端后访问。</p></body></html>""",
+        )
 
     if method == "GET" and path == "/hr/search":
         username = _current_user(handler) or AUTH_USERNAME

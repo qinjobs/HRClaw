@@ -227,6 +227,13 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(task_payload["job_id"], custom_scorecard["id"])
 
     def test_login_and_protected_page(self):
+        trial_handler = self._make_handler("GET", "/hr/trial")
+        result = self.api.handle_request(trial_handler)
+        self.assertEqual(len(result), 4)
+        status, _body, _content_type, headers = result
+        self.assertEqual(status, 303)
+        self.assertIn("/login", headers.get("Location", ""))
+
         page_handler = self._make_handler("GET", "/hr/tasks")
         result = self.api.handle_request(page_handler)
         self.assertEqual(len(result), 4)
@@ -250,6 +257,23 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("text/html", content_type)
         self.assertIn("Recommend", body.decode("utf-8"))
+
+        root_handler = self._make_handler("GET", "/")
+        root_handler.headers["Cookie"] = cookie
+        result = self.api.handle_request(root_handler)
+        self.assertEqual(len(result), 4)
+        status, _body, _content_type, headers = result
+        self.assertEqual(status, 303)
+        self.assertIn("/hr/trial", headers.get("Location", ""))
+
+        trial_handler = self._make_handler("GET", "/hr/trial")
+        trial_handler.headers["Cookie"] = cookie
+        result = self.api.handle_request(trial_handler)
+        self.assertEqual(len(result), 3)
+        status, body, content_type = result
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", content_type)
+        self.assertIn("试点中心", body.decode("utf-8"))
 
     def test_recommend_run_requires_login(self):
         handler = self._make_handler(

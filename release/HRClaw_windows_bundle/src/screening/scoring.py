@@ -4,7 +4,9 @@ import re
 
 from .jd_scorecard_repositories import BUILTIN_SCORING_KIND, get_jd_scorecard
 from .models import CandidateDecision, ScoreResult
+from .phase2_scorecards import score_phase2_resume
 from .scorecards import SCORECARDS
+from .scoring_targets import get_scoring_target
 
 
 def _score_truthy(value: bool, weight: float) -> float:
@@ -55,6 +57,98 @@ def _builtin_scorecard(job_id: str) -> dict:
     return SCORECARDS[job_id]
 
 
+def _scorecard_age_range(scorecard: dict) -> tuple[float | None, float | None]:
+    filters = scorecard.get("filters") if isinstance(scorecard.get("filters"), dict) else {}
+    age_min = _coerce_number(scorecard.get("age_min"))
+    age_max = _coerce_number(scorecard.get("age_max"))
+    if age_min is None:
+        age_min = _coerce_number(filters.get("age_min"))
+    if age_max is None:
+        age_max = _coerce_number(filters.get("age_max"))
+    age_range = scorecard.get("age_range") if isinstance(scorecard.get("age_range"), dict) else {}
+    if age_min is None and isinstance(age_range, dict):
+        age_min = _coerce_number(age_range.get("min"))
+    if age_max is None and isinstance(age_range, dict):
+        age_max = _coerce_number(age_range.get("max"))
+    if age_min is not None and age_max is not None and age_min > age_max:
+        age_min, age_max = age_max, age_min
+    return age_min, age_max
+
+
+def _format_number(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:g}"
+
+
+def _append_age_range_failures(scorecard: dict, fields: dict, hard_filter_fail_reasons: list[str]) -> None:
+    age_min, age_max = _scorecard_age_range(scorecard)
+    if age_min is None and age_max is None:
+        return
+    age = _coerce_number(fields.get("age"))
+    if age is None:
+        hard_filter_fail_reasons.append("年龄信息缺失")
+        return
+    if age_min is not None and age_max is not None:
+        if not (age_min <= age <= age_max):
+            hard_filter_fail_reasons.append(f"年龄不在 {_format_number(age_min)}-{_format_number(age_max)} 岁范围内")
+        return
+    if age_min is not None and age < age_min:
+        hard_filter_fail_reasons.append(f"年龄低于 {_format_number(age_min)} 岁")
+    if age_max is not None and age > age_max:
+        hard_filter_fail_reasons.append(f"年龄高于 {_format_number(age_max)} 岁")
+
+
+def _phase2_profile_from_fields(fields: dict) -> dict:
+    raw_resume_text = str(
+        fields.get("raw_summary")
+        or fields.get("resume_summary")
+        or fields.get("summary")
+        or fields.get("page_text")
+        or ""
+    )
+    return {
+        "name": str(fields.get("name") or ""),
+        "city": str(fields.get("city") or fields.get("location") or ""),
+        "location": str(fields.get("location") or fields.get("city") or ""),
+        "latest_title": str(fields.get("current_title") or fields.get("latest_title") or ""),
+        "latest_company": str(fields.get("current_company") or fields.get("latest_company") or ""),
+        "skills": _coerce_list(fields.get("skills") or fields.get("tools") or fields.get("project_keywords") or []),
+        "industry_tags": _coerce_list(fields.get("industry_tags") or fields.get("project_keywords") or []),
+        "years_experience": fields.get("years_experience"),
+        "education_level": str(fields.get("education_level") or ""),
+        "age": fields.get("age"),
+        "raw_profile": {
+            "raw_resume_text": raw_resume_text,
+            "summary": raw_resume_text,
+        },
+    }
+
+
+def _score_custom_target(scorecard: dict, fields: dict) -> ScoreResult:
+    score_payload = score_phase2_resume(scorecard, _phase2_profile_from_fields(fields))
+    dimension_scores = {
+        str(key): float(value)
+        for key, value in dict(score_payload.get("dimension_scores") or {}).items()
+    }
+    decision_value = str(score_payload.get("decision") or CandidateDecision.REJECT.value)
+    try:
+        decision = CandidateDecision(decision_value)
+    except ValueError:
+        decision = CandidateDecision.REJECT
+    return ScoreResult(
+        hard_filter_pass=bool(score_payload.get("hard_filter_pass")),
+        hard_filter_fail_reasons=list(score_payload.get("hard_filter_fail_reasons") or []),
+        dimension_scores=dimension_scores,
+        total_score=float(score_payload.get("total_score") or 0.0),
+        decision=decision,
+        review_reasons=list(score_payload.get("review_reasons") or []),
+    )
+
+
 def _qa_experience_level(fields: dict) -> float:
     years = _coerce_number(fields.get("years_experience"))
     if years is None:
@@ -71,6 +165,10 @@ def _qa_experience_level(fields: dict) -> float:
 
 
 def score_candidate(job_id: str, fields: dict) -> ScoreResult:
+    target = get_scoring_target(job_id)
+    if target and target.get("kind") != BUILTIN_SCORING_KIND and isinstance(target.get("scorecard"), dict):
+        return _score_custom_target(target["scorecard"], fields)
+
     scorecard = _builtin_scorecard(job_id)
     hard_filter_fail_reasons: list[str] = []
 
@@ -98,6 +196,8 @@ def score_candidate(job_id: str, fields: dict) -> ScoreResult:
                 hard_filter_fail_reasons.append(rule["message"])
         elif kind == "in_set" and value not in rule["value"]:
             hard_filter_fail_reasons.append(rule["message"])
+
+    _append_age_range_failures(scorecard, fields, hard_filter_fail_reasons)
 
     hard_filter_pass = not hard_filter_fail_reasons
     weights = scorecard["weights"]

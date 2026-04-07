@@ -1,7 +1,7 @@
 [project]
-name = "gpt54-boss-screening-mvp"
-version = "0.1.0"
-description = "Week 1 MVP for GPT-5.4-assisted resume screening"
+name = "hrclaw"
+version = "0.2.0"
+description = "Local-first recruiting copilot for JD scorecards, batch resume scoring, and browser capture"
 requires-python = ">=3.12"
 
 [tool.unittest]

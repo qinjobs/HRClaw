@@ -1,4 +1,4 @@
-# Windows 安装包说明
+# HRClaw Windows 安装包说明
 
 这里存放 Windows 10 一键安装需要的 Windows 专属附件。
 
@@ -10,7 +10,7 @@
 
 ## 默认数据策略
 
-Windows 安装包按“全新上线”准备，只保留默认的 `admin` 管理员账号，不预置以下业务数据：
+HRClaw Windows 安装包按“全新上线”准备，只保留默认的 `admin` 管理员账号，不预置以下业务数据：
 
 - 任务 LIST
 - 评分卡

@@ -2,112 +2,157 @@
   <img src="assets/logo.jpg" alt="HRClaw logo" width="220" />
 </p>
 
-# HRClaw JD Scorecard Skill
+# HRClaw
 
-<p align="center">Turn job descriptions and PDF resumes into recruiter-ready decisions.</p>
-<p align="center">把 JD 和 PDF 简历变成可执行的招聘结论。</p>
+<p align="center">Local-first recruiting copilot for JD scorecards, batch resume scoring, browser capture, and recruiter-ready output.</p>
+<p align="center">把 JD、PDF 简历和浏览器候选人页，变成招聘团队能直接执行的筛选结论。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Skill-JD%20Scorecard-blue.svg" alt="JD Scorecard Skill" />
-  <img src="https://img.shields.io/badge/Focus-Recruiting%20Ops-red.svg" alt="Recruiting Ops" />
+  <img src="https://img.shields.io/badge/version-v0.2.0-0071e3.svg" alt="v0.2.0" />
+  <img src="https://img.shields.io/badge/license-MIT-f5c542.svg" alt="MIT License" />
+  <img src="https://img.shields.io/badge/deploy-local--first-111111.svg" alt="Local first" />
+  <img src="https://img.shields.io/badge/output-Feishu%20%2F%20DingTalk-2ea44f.svg" alt="Feishu and DingTalk output" />
 </p>
 
 <p align="center">
-  <a href="mailto:hrclaw@126.com">Email: hrclaw@126.com</a> ·
-  <a href="README.zh-CN.md">中文首页</a> ·
-  Open Issues: `Demo request` / `中文 demo 预约`
+  <a href="mailto:hrclaw@126.com">Email</a> ·
+  <a href="README.zh-CN.md">中文说明</a> ·
+  Issues: <code>Demo request</code> / <code>中文 demo 预约</code>
 </p>
 
-![JD Scorecard demo](assets/demo.gif)
+![HRClaw demo](skills/jd-scorecard/assets/demo.gif)
 
-> One skill, three jobs: turn a JD into a scorecard, score a PDF resume against that scorecard, and render a Feishu/DingTalk-friendly chat view when recruiters want something they can paste into a team channel.
+> HRClaw is an open-source recruiting workflow that combines a JD scorecard skill, batch resume scoring, a recruiter admin console, and a Chrome side-panel capture layer. It is designed for teams that want a usable screening standard before they buy or build a full ATS.
+
+## Why HRClaw
+
+- Convert a JD into a reusable screening scorecard in minutes
+- Score PDF or Word resumes with evidence, thresholds, and interview questions
+- Capture candidate detail pages from the browser into the same scoring backend
+- Render recruiter-friendly results for Feishu, DingTalk, Slack, or Teams
+- Keep the workflow local-first so teams can test quickly without exposing candidate data to multiple SaaS tools
+
+## What Ships In This Repo
+
+| Surface | What it does | Where it lives |
+| --- | --- | --- |
+| `jd-scorecard` skill | JD to scorecard, resume scoring, chat rendering | `skills/jd-scorecard/` |
+| Recruiter admin console | Trial hub, JD cards, batch imports, workbench views | `admin_frontend/` + `src/screening/api.py` |
+| Batch import pipeline | PDF / DOC / DOCX parsing, OCR fallback, scoring | `src/screening/phase2_imports.py` |
+| Browser capture plugin | Chrome MV3 side panel for candidate page capture | `chrome_extensions/boss_resume_score/` |
+| Local install bundles | Frontend dist, plugin zip, Windows-friendly package assets | `install/` + `release/` |
+
+## Core Workflow
+
+1. Create a scorecard from a JD
+2. Import a batch of resumes and score them against that scorecard
+3. Capture candidate detail pages from the browser when recruiters prefer in-page review
+4. Share the result as JSON, Markdown, or Feishu / DingTalk-friendly chat text
+5. Review and calibrate the scoring standard with HR and hiring managers
+
+## Product Highlights
+
+### 1. JD Scorecards
+
+- Hard filters, must-have signals, nice-to-have signals
+- Interview questions and red flags generated from the JD
+- Reusable templates for QA, Python, caption, and custom roles
+
+### 2. Batch Resume Scoring
+
+- Import PDF / DOC / DOCX in one batch
+- Structured candidate profile extraction
+- Recommend / review / reject decisions with evidence
+- OCR fallback path for scanned PDFs
+
+### 3. Browser Capture
+
+- Chrome MV3 side panel workflow
+- Reads the candidate page the recruiter is already viewing
+- Sends the snapshot into the same scoring backend
+- Keeps workbench and manual HR follow-up aligned
+
+### 4. Recruiter-Ready Output
+
+- Pure JSON for integrations and automation
+- Markdown for HR and hiring manager review
+- Feishu / DingTalk output for fast team sharing
 
 ## Best For
 
-- Recruiting teams screening high-volume JD and resume traffic
-- Teams that want one scoring standard instead of ad hoc judgment
-- Feishu / DingTalk heavy ops workflows
-- Product, HR, and hiring manager collaboration
+- Recruiting teams handling repeated hiring for the same role family
+- HR teams that need one screening standard instead of ad hoc judgment
+- Teams collaborating in Feishu or DingTalk
+- Pilot projects where speed, clarity, and local deployment matter more than a full ATS rollout
 
-## What It Does
+## Quick Start
 
-- `JD -> scorecard`
-- `PDF resume -> score against scorecard`
-- `JSON -> automation`
-- `Markdown -> human review`
-- `Chat markdown -> Feishu / DingTalk`
+### Run the local app
 
-## Output Modes
-
-| Mode | Best for | Example output |
-| --- | --- | --- |
-| Pure JSON | Integrations and downstream parsing | `skills/jd-scorecard/templates/scorecard.json` |
-| Human-readable Markdown | Recruiter review and team calibration | `skills/jd-scorecard/templates/scorecard.md` |
-| Chat-friendly Markdown | Feishu, DingTalk, Slack, Teams | `skills/jd-scorecard/templates/chat-scorecard.md` |
-
-## Try It
-
-Paste one of these:
-
-```text
-把这段 JD 转成招聘评分卡，输出纯 JSON
-用这份 PDF 简历按下面评分卡打分，输出纯 JSON
-用飞书版输出这份评分卡
+```bash
+bash scripts/start_phase1_server.sh
 ```
 
-If you are scoring a resume, give the skill both the resume and the scorecard or JD.
-If the PDF has no text layer, the flow will mark it as `needs_ocr` instead of guessing.
+Open:
 
-## What You Get
+- `http://127.0.0.1:8080/login`
+- default account: `admin / admin`
 
-- Clear hard filters for fast screening
-- Must-have and nice-to-have signals
-- Interview questions that test real work
-- Red flags that help recruiters reject quickly
-- Resume scoring with evidence, matched terms, and next steps
-- Chat-ready output for the tools teams already use
-
-## Install For Local Codex Use
+### Install the skill into Codex
 
 ```bash
 cp -R skills/jd-scorecard ~/.codex/skills/
 ```
 
-Then restart Codex so the skill is loaded.
+Then restart Codex.
 
-## Open vs Private
+### Load the browser plugin
 
-| Open source skill | Private product |
+Open Chrome extensions and load:
+
+```text
+chrome_extensions/boss_resume_score
+```
+
+Then point the plugin to:
+
+```text
+http://127.0.0.1:8080
+```
+
+## Release Assets In This Version
+
+- `install/packages/frontend/admin_frontend-dist.tgz`
+- `install/packages/windows/admin_frontend-dist.zip`
+- `install/packages/chrome_extension/boss_resume_score.zip`
+- `release/HRClaw_windows_bundle.zip`
+
+These are refreshed so the packaged assets match the current admin console and browser capture layer.
+
+## Open Source vs Private Deployment
+
+| Open source in this repo | Private deployment / service |
 | --- | --- |
-| JD scoring | BOSS integration |
-| Resume scoring | Team calibration |
-| Chat-friendly markdown | Workflow automation |
-| Examples and templates | Internal deployment and support |
-
-The public repo stays text-first, portable, and easy to inspect.
-The private version adds the workflow depth and integrations needed for live hiring ops.
+| JD scorecards and resume scoring | Workflow customization |
+| Recruiter admin console | Team calibration and rollout support |
+| Browser capture plugin | Internal deployment assistance |
+| Local install assets | Enterprise process adaptation |
+| Examples and templates | Change management for real hiring teams |
 
 ## Repository Map
 
+- [Chinese README](README.zh-CN.md)
 - [Skill definition](skills/jd-scorecard/SKILL.md)
 - [JD prompt](skills/jd-scorecard/prompts/jd-to-scorecard.md)
-- [Resume prompt](skills/jd-scorecard/prompts/resume-score.md)
-- [Skill references](skills/jd-scorecard/references/)
+- [Resume scoring prompt](skills/jd-scorecard/prompts/resume-score.md)
 - [Chat scorecard template](skills/jd-scorecard/templates/chat-scorecard.md)
 - [Chat resume template](skills/jd-scorecard/templates/chat-resume-score.md)
-- [Examples](skills/jd-scorecard/examples/)
-- [Validation workflow](.github/workflows/validate-skill.yml)
-
-## Skill References
-
-- [Chinese homepage](README.zh-CN.md)
+- [MVP checklist](docs/HRClaw_MVP执行清单.md)
+- [Pilot SOP](docs/HRClaw_试点SOP.md)
 - [Chinese deployment guide](docs/中文说明书-部署与使用.md)
 - [Intranet deployment checklist](docs/内网部署实施清单.md)
-- [CLAWHUB publish checklist](CLAWHUB_PUBLISH_CHECKLIST.md)
-- [Quickstart](skills/jd-scorecard/references/quickstart.md)
-- [FAQ](skills/jd-scorecard/references/faq.md)
-- [Limitations](skills/jd-scorecard/references/limitations.md)
+- [Browser capture plugin guide](chrome_extensions/boss_resume_score/README.md)
+- [Install directory guide](install/README.md)
 
 ## Contact
 

@@ -46,7 +46,7 @@ from .phase2_scorecards import generate_scorecard_from_jd, normalize_phase2_scor
 from .phase2_ui import phase2_page_html
 from .pipeline_service import CollectionPipelineService
 from .scorecards import normalize_builtin_scorecard
-from .scoring_targets import is_builtin_scoring_target, list_scoring_targets
+from .scoring_targets import get_scoring_target, list_scoring_targets
 from .search_service import ResumeSearchService
 from .repositories import (
     add_review_action,
@@ -188,7 +188,7 @@ def _admin_frontend_shell(
   <div id="root">
     <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px;background:#f8fafc;color:#0f172a;font-family:'SF Pro Display','PingFang SC','Helvetica Neue',Arial,sans-serif;">
       <div style="width:min(100%,720px);padding:32px;border:1px solid #e2e8f0;border-radius:24px;background:rgba(255,255,255,.92);box-shadow:0 10px 30px rgba(15,23,42,.06);">
-        <div style="font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#64748b;">Recruiting Admin</div>
+    <div style="font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#64748b;">HRClaw</div>
         <h1 style="margin:16px 0 0;font-size:32px;line-height:1.15;">{fallback_heading}</h1>
         <p style="margin:12px 0 0;font-size:15px;line-height:1.8;color:#475569;">{fallback_description}</p>
       </div>
@@ -374,13 +374,13 @@ def _bool_query_param(value: str | None) -> bool | None:
 
 
 def _login_page_html(next_path: str) -> str:
-    safe_next = next_path if next_path.startswith("/") else "/hr/tasks"
+    safe_next = next_path if next_path.startswith("/") else "/hr/trial"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>登录 - 招聘智能筛选平台</title>
+  <title>登录 - HRClaw</title>
   <style>
     :root {{
       --boss-blue: #00bebd;
@@ -450,7 +450,7 @@ def _login_page_html(next_path: str) -> str:
 </head>
 <body>
   <div class="card">
-    <div class="banner">招聘智能筛选平台</div>
+    <div class="banner">HRClaw</div>
     <div class="body">
       <form id="loginForm">
         <label>用户名</label>
@@ -614,7 +614,7 @@ def _task_runner_page_html(username: str) -> str:
 </head>
 <body>
   <div class="top">
-    <div class="brand">招聘智能筛选平台 · Recommend流程</div>
+    <div class="brand">HRClaw · Recommend流程</div>
     <div class="topNav">
       <span>用户：{username}</span>
       <div class="navGroup">
@@ -625,7 +625,7 @@ def _task_runner_page_html(username: str) -> str:
       <div class="navGroup">
         <span class="navLabel">搜索</span>
         <a href="/hr/search">高级搜索</a>
-        <a href="/hr/phase2">JD管理</a>
+        <a href="/hr/phase2">JD评分卡</a>
       </div>
       <button id="logoutBtn" type="button">退出</button>
     </div>
@@ -679,7 +679,7 @@ def _task_runner_page_html(username: str) -> str:
             <span>基于 JD 或自然语言需求，从本地简历库直接检索候选人。</span>
           </a>
           <a class="quickCard" href="/hr/phase2">
-            <strong>JD管理</strong>
+            <strong>JD评分卡</strong>
             <span>根据 JD 生成评分卡，并批量导入 Word/PDF 简历做筛查与打分。</span>
           </a>
         </div>
@@ -1465,7 +1465,7 @@ def _search_page_html(username: str) -> str:
   <div class="top">
     <div class="brand">
       <div class="brandMark"></div>
-      <div>招聘智能筛选平台 · 高级搜索</div>
+      <div>HRClaw · 高级搜索</div>
     </div>
     <div class="topNav">
       <span>用户：__USERNAME__</span>
@@ -2302,7 +2302,7 @@ def _workbench_page_html(username: str) -> str:
   <div class="topbar">
     <div class="brand">
       <div class="brandMark"></div>
-      <div>招聘智能筛选平台 · HR 推荐处理台</div>
+      <div>HRClaw · HR 推荐处理台</div>
     </div>
     <div class="topNav">
       <span>用户：__USERNAME__</span>
@@ -2975,16 +2975,16 @@ def handle_request(handler):
 
     if method == "GET" and path == "/":
         if _current_user(handler):
-            return _redirect("/hr/tasks")
+            return _redirect("/hr/trial")
         return _redirect("/login")
 
     if method == "GET" and path == "/login":
         if _current_user(handler):
-            return _redirect("/hr/tasks")
+            return _redirect("/hr/trial")
         query = parse_qs(parsed.query or "")
-        next_path = (query.get("next") or ["/hr/tasks"])[0]
+        next_path = (query.get("next") or ["/hr/trial"])[0]
         shell = _admin_frontend_shell(
-            title="登录 - 招聘智能筛选平台",
+            title="登录 - HRClaw",
             page_key="login",
             fallback_heading="登录后台",
             fallback_description="初始管理员：admin / admin",
@@ -3122,6 +3122,24 @@ def handle_request(handler):
             return _html(HTTPStatus.OK, shell)
         return _html(HTTPStatus.OK, _task_runner_page_html(username))
 
+    if method == "GET" and path == "/hr/trial":
+        username = _current_user(handler) or AUTH_USERNAME
+        shell = _admin_frontend_shell(
+            title="试点中心 - HRClaw",
+            page_key="trial",
+            fallback_heading="试点中心",
+            fallback_description="把 JD 评分卡、简历导入和 Chrome 浏览器采集收拢到一页，方便 HR 直接启动试点。",
+            current_path=path,
+            username=username,
+            user_role=_current_user_role(handler),
+        )
+        if shell:
+            return _html(HTTPStatus.OK, shell)
+        return _html(
+            HTTPStatus.OK,
+            """<!doctype html><html><body><h1>试点中心</h1><p>请构建最新后台前端后访问。</p></body></html>""",
+        )
+
     if method == "GET" and path == "/hr/search":
         username = _current_user(handler) or AUTH_USERNAME
         shell = _admin_frontend_shell(
@@ -3140,10 +3158,10 @@ def handle_request(handler):
     if method == "GET" and path == "/hr/phase2":
         username = _current_user(handler) or AUTH_USERNAME
         shell = _admin_frontend_shell(
-            title="JD管理 - 评分卡工作台",
+            title="JD评分卡 - 评分卡工作台",
             page_key="phase2",
-            fallback_heading="JD 管理",
-            fallback_description="统一维护第一阶段公式评分卡与 JD 自定义评分卡。",
+            fallback_heading="JD评分卡",
+            fallback_description="统一维护第一阶段内置 JD评分卡与第二阶段自定义 JD评分卡。",
             current_path=path,
             username=username,
             user_role=_current_user_role(handler),
@@ -3321,7 +3339,7 @@ def handle_request(handler):
         )
 
     if method == "GET" and path == "/api/jobs":
-        return _json(HTTPStatus.OK, {"items": list_jobs()})
+        return _json(HTTPStatus.OK, {"items": list_scoring_targets()})
 
     if method == "GET" and path == "/api/scoring-targets":
         return _json(
@@ -3452,7 +3470,7 @@ def handle_request(handler):
 
     if method == "POST" and path == "/api/v3/pipelines":
         payload = _read_json(handler)
-        if not is_builtin_scoring_target(str(payload.get("job_id") or "")):
+        if not get_scoring_target(str(payload.get("job_id") or "")):
             return _json(HTTPStatus.BAD_REQUEST, {"error": "Unknown job_id"})
         try:
             item = PIPELINE_SERVICE.upsert_pipeline(payload)
@@ -3660,7 +3678,7 @@ def handle_request(handler):
             return _json(HTTPStatus.UNAUTHORIZED, {"error": "请先登录平台"})
         payload = _read_json(handler)
         job_id = payload.get("job_id")
-        if not is_builtin_scoring_target(str(job_id or "")):
+        if not get_scoring_target(str(job_id or "")):
             return _json(HTTPStatus.BAD_REQUEST, {"error": "Unknown job_id"})
         precheck_error = _model_precheck_error()
         if precheck_error:
@@ -3713,7 +3731,7 @@ def handle_request(handler):
 
     if method == "POST" and path == "/api/tasks":
         payload = _read_json(handler)
-        if not is_builtin_scoring_target(str(payload.get("job_id") or "")):
+        if not get_scoring_target(str(payload.get("job_id") or "")):
             return _json(HTTPStatus.BAD_REQUEST, {"error": "Unknown job_id"})
         payload["search_mode"] = "recommend"
         payload.setdefault("sort_by", "active")
@@ -3979,7 +3997,7 @@ def handle_request(handler):
 </head>
 <body>
   <div class="topbar">
-    <div class="brand">招聘智能筛选平台 · HR Checklist</div>
+    <div class="brand">HRClaw · HR Checklist</div>
     <div class="nav">
       <span>用户：__USERNAME__</span>
       <div class="nav-group">

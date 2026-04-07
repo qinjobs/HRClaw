@@ -6,20 +6,26 @@
 
 1. 阅读完整手册：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/中文说明书-部署与使用.md`
-2. 如为公司内网上线，先对照：
+2. 先看试点 SOP：
+   `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/HRClaw_试点SOP.md`
+3. 如为公司内网上线，先对照：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/内网部署实施清单.md`
-3. 如果部署到 Windows 10 单机，优先使用：
+4. 如果部署到 Windows 10 单机，优先使用：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/install/windows/README.md`
-4. 执行第一阶段安装：
+5. 执行第一阶段安装：
    `bash install/scripts/bootstrap_phase1_env.sh`
-5. 如需第二阶段 OCR 和批量导入能力，再执行：
+6. 如需第二阶段 OCR 和批量导入能力，再执行：
    `bash install/scripts/bootstrap_phase2_env.sh`
-6. 准备配置：
+7. 准备配置：
    `cp install/packages/config/.env.local.example .env.local`
-7. 启动服务：
+8. 启动服务：
    `bash install/scripts/start_server.sh`
-8. 健康检查：
+9. 健康检查：
    `bash install/scripts/check_health.sh`
+10. 如需浏览器采集能力，再安装 Chrome 插件：
+   - 解压目录：`install/packages/chrome_extension/boss_resume_score/`
+   - 压缩包：`install/packages/chrome_extension/boss_resume_score.zip`
+   - 插件使用说明：`chrome_extensions/boss_resume_score/README.md`
 
 ## 2. 目录结构
 
@@ -65,6 +71,7 @@ install/
 
 - `boss_resume_score/`：Chrome 插件已解压目录
 - `boss_resume_score.zip`：Chrome 插件压缩包
+- 这部分是 HRClaw 的浏览器采集层，用于把候选人页面快照送进同一套评分引擎
 
 ### `scripts`
 
@@ -86,5 +93,5 @@ install/
 ## 4. 说明
 
 - 后台 React 构建产物已经打包好，默认不要求部署机重新安装前端依赖
-- OCR 依赖中的 PaddlePaddle wheel 目前只附带了本机现成的 `macOS arm64` 版本
-- 如果目标机器平台不同，请按目标平台补充对应 wheel 或在线安装
+- GitHub 仓库默认不携带大体积 PaddlePaddle wheel
+- 如果目标机器需要离线安装 OCR，请按目标平台补充对应 wheel，或在安装时在线拉取依赖
