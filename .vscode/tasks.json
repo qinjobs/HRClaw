@@ -1,0 +1,98 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Phase1: bootstrap python env",
+      "type": "shell",
+      "command": "bash scripts/bootstrap_phase1_env.sh",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Phase1: start backend",
+      "type": "shell",
+      "command": "bash scripts/start_phase1_server.sh",
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": "^(.*)$",
+              "message": 1
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "\\[phase1\\] starting server bind:",
+            "endsPattern": "\\[phase1\\] server started:"
+          }
+        }
+      ]
+    },
+    {
+      "label": "Phase1: stop backend",
+      "type": "shell",
+      "command": "bash scripts/stop_phase1_server.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: npm ci",
+      "type": "shell",
+      "command": "npm ci",
+      "options": {
+        "cwd": "${workspaceFolder}/admin_frontend"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: dev",
+      "type": "shell",
+      "command": "npm run dev -- --host 127.0.0.1 --port 5173",
+      "options": {
+        "cwd": "${workspaceFolder}/admin_frontend"
+      },
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": "^(.*)$",
+              "message": 1
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": ".*",
+            "endsPattern": ".*(ready in|Local:).*"
+          }
+        }
+      ]
+    },
+    {
+      "label": "Tests: python unittest",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m unittest discover -s tests -p \"test_*.py\"",
+      "windows": {
+        "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m unittest discover -s tests -p \"test_*.py\""
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Tests: extension plugin",
+      "type": "shell",
+      "command": "node --test tests/extension/plugin.test.js",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Dev: backend + frontend",
+      "dependsOn": [
+        "Phase1: start backend",
+        "Frontend: dev"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

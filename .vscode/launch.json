@@ -1,0 +1,79 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: HRClaw backend (8080)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.screening.server",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "SCREENING_SERVER_HOST": "127.0.0.1",
+        "SCREENING_SERVER_PORT": "8080"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: unittest (all)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": [
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_*.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: unittest (current file)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": [
+        "${relativeFile}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Frontend: Vite dev server",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev -- --host 127.0.0.1 --port 5173",
+      "cwd": "${workspaceFolder}/admin_frontend"
+    },
+    {
+      "name": "Frontend: Chrome (http://127.0.0.1:5173)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/admin_frontend/src"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "HRClaw: backend + frontend",
+      "configurations": [
+        "Python: HRClaw backend (8080)",
+        "Frontend: Vite dev server"
+      ]
+    }
+  ]
+}
