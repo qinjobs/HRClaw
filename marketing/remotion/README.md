@@ -1,54 +1,69 @@
-# Remotion video
+# HRClaw Remotion Promo
 
-<p align="center">
-  <a href="https://github.com/remotion-dev/logo">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-dark.apng">
-      <img alt="Animated Remotion Logo" src="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-light.gif">
-    </picture>
-  </a>
-</p>
+This directory contains the Remotion project used to assemble the HRClaw product promo video.
 
-Welcome to your Remotion project!
+## Composition
+
+- `HRClawPromo1080p`
+- `1920x1080`
+- `30fps`
+- `50s`
+
+## Story Flow
+
+1. Brand intro
+2. Login and trial hub
+3. `jd-scorecard` skill demo
+4. Scorecard management
+5. Batch resume import and scoring
+6. Batch results overview
+7. Browser side panel capture
+8. CTA outro
+
+## Source Assets
+
+Place the edited product footage in [`public/`](/Users/jobs/Documents/CODEX/ZHAOPIN/marketing/remotion/public):
+
+- `01-login.mp4`
+- `02-trial.mp4`
+- `03-scorecard.mp4`
+- `04-batch-import.mp4`
+- `05-batch-results.mp4`
+- `06-plugin-sidepanel.mp4`
+- `07-hrclaw-skill.mp4`
+- `MVP.png`
+- `logo.jpg`
 
 ## Commands
 
-**Install Dependencies**
+Install dependencies:
 
-```console
-npm i
+```bash
+npm install
 ```
 
-**Start Preview**
+Start Remotion Studio:
 
-```console
+```bash
 npm run dev
 ```
 
-**Render video**
+Type-check and lint:
 
-```console
-npx remotion render
+```bash
+npm run lint
 ```
 
-**Upgrade Remotion**
+Render the 1080p promo:
 
-```console
-npx remotion upgrade
+```bash
+npm run render
 ```
 
-## Docs
+## Editing Notes
 
-Get started with Remotion by reading the [fundamentals page](https://www.remotion.dev/docs/the-fundamentals).
+- Main timeline: [`src/PromoVideo.tsx`](/Users/jobs/Documents/CODEX/ZHAOPIN/marketing/remotion/src/PromoVideo.tsx)
+- Composition registration: [`src/Root.tsx`](/Users/jobs/Documents/CODEX/ZHAOPIN/marketing/remotion/src/Root.tsx)
+- Brand tokens: [`src/theme.ts`](/Users/jobs/Documents/CODEX/ZHAOPIN/marketing/remotion/src/theme.ts)
 
-## Help
-
-We provide help on our [Discord server](https://discord.gg/6VzzNDwUwV).
-
-## Issues
-
-Found an issue with Remotion? [File an issue here](https://github.com/remotion-dev/remotion/issues/new).
-
-## License
-
-Note that for some entities a company license is needed. [Read the terms here](https://github.com/remotion-dev/remotion/blob/main/LICENSE.md).
+This promo is intentionally product-first: real interface footage, minimal motion design, and short, recruiter-facing copy.

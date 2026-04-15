@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PlayCircle, RotateCcw, Save } from "lucide-react";
+import { PlayCircle } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { StatTile } from "@/components/shared/stat-tile";
@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { getBootstrap } from "@/lib/bootstrap";
-import { ApiError, getJson, postJson } from "@/lib/api";
+import { getJson, postJson } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
 import type { JobOption } from "@/lib/types";
 
@@ -29,10 +29,11 @@ export function TasksPage() {
   const [maxCandidates, setMaxCandidates] = useState("50");
   const [maxPages, setMaxPages] = useState("30");
   const [sortBy, setSortBy] = useState("active");
+  const [keyword, setKeyword] = useState("");
+  const [city, setCity] = useState("");
+  const [autoGreetThreshold, setAutoGreetThreshold] = useState("");
   const [logs, setLogs] = useState<string[]>(["等待操作..."]);
   const [loadingJobs, setLoadingJobs] = useState(true);
-  const [resettingSession, setResettingSession] = useState(false);
-  const [savingSession, setSavingSession] = useState(false);
   const [runningTask, setRunningTask] = useState(false);
 
   const appendLog = (message: string) => {
@@ -56,55 +57,30 @@ export function TasksPage() {
     void loadJobs();
   }, []);
 
-  const resetSessionAndRelogin = async () => {
-    setResettingSession(true);
-    appendLog("开始清空本地已保存的 BOSS 会话...");
-    try {
-      const data = await postJson<{ message?: string }>("/api/boss/session/reset", {});
-      appendLog(data.message || "已清空本地会话。请先在 Chrome 的 BOSS 页面手动登录，并刷新一次 BOSS 页面让插件重新同步。");
-      pushToast({
-        tone: "info",
-        title: "已清空本地会话",
-        description: data.message || "请在已安装插件的 Chrome 中手动登录 BOSS，并刷新一次 BOSS 页面。",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "清空旧会话失败";
-      appendLog(`清空旧会话失败：${message}`);
-      pushToast({ tone: "error", title: "清空旧会话失败", description: message });
-    } finally {
-      setResettingSession(false);
-    }
-  };
-
-  const saveSessionOnly = async () => {
-    setSavingSession(true);
-    appendLog("开始检查当前 Chrome 已同步的 BOSS 会话。如果你刚手动登录 BOSS，请先刷新一次 BOSS 页面，让插件完成同步。");
-    try {
-      const data = await postJson<{ login_detected: boolean; reason?: string }>("/api/boss/session/save", {});
-      appendLog(`会话检测通过并已保存：login_detected=${data.login_detected}，reason=${data.reason || "-"}`);
-      pushToast({ tone: "success", title: "BOSS 会话已确认" });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "会话保存失败";
-      appendLog(`会话保存失败：${message}`);
-      if (error instanceof ApiError && typeof error.payload === "object" && error.payload && "summary" in error.payload) {
-        pushToast({ tone: "info", title: "请先在 Chrome 中手动登录 BOSS", description: message });
-      } else {
-        pushToast({ tone: "error", title: "会话保存失败", description: message });
-      }
-    } finally {
-      setSavingSession(false);
-    }
-  };
+  useEffect(() => {
+    const selectedJob = jobs.find((item) => item.id === jobId) || jobs[0];
+    const scorecard = selectedJob?.scorecard as Record<string, any> | undefined;
+    const filters = scorecard?.filters as Record<string, unknown> | undefined;
+    setKeyword(selectedJob?.name || "");
+    setCity(String(filters?.location || "").trim());
+  }, [jobId, jobs]);
 
   const createAndRun = async () => {
     setRunningTask(true);
-    appendLog("开始创建并执行 Recommend 任务，系统会先校验已保存的 BOSS 会话...");
+    appendLog("开始创建并执行 Recommend 任务，请先在当前 Chrome 中手动登录 BOSS，然后直接采集当前页面。");
     try {
       const payload = {
         job_id: jobId,
         max_candidates: Number(maxCandidates || 50),
         max_pages: Number(maxPages || 30),
         sort_by: sortBy,
+        search_config: {
+          ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
+          ...(city.trim() ? { city: city.trim() } : {}),
+          ...(autoGreetThreshold.trim() === ""
+            ? {}
+            : { auto_greet_threshold: Number(autoGreetThreshold) }),
+        },
       };
       const data = await postJson<{ task_id?: string; result?: { processed?: unknown[] } }>(
         "/api/recommend/run",
@@ -129,10 +105,10 @@ export function TasksPage() {
       username={bootstrap.username}
       userRole={bootstrap.userRole}
       title="任务执行"
-      subtitle="执行顺序已调整为：HR 先在已安装插件的 Chrome 中手动登录 BOSS，插件同步当前会话，系统确认后再执行 recommend 采集、评分和结果回填。"
+      subtitle="执行顺序已调整为：HR 先在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面，再执行 recommend 采集、评分和结果回填。分数达到评分卡 recommend 阈值后，会自动点击打招呼。"
     >
       <div className="grid gap-4 md:grid-cols-3">
-        <StatTile label="默认流程" value="Recommend" hint="会话校验 → 推荐采集 → 打分 → 清单回写" />
+        <StatTile label="默认流程" value="Recommend" hint="手动登录 → 当前页采集 → 打分 → 清单回写" />
         <StatTile label="当前模式" value={sortBy === "active" ? "活跃优先" : "最新优先"} hint="排序只影响候选人扫描顺序" />
         <StatTile label="后台入口" value="5 个模块" hint="任务执行、推荐处理台、Checklist、搜索、JD评分卡" />
       </div>
@@ -201,13 +177,47 @@ export function TasksPage() {
                   <option value="recent">最新优先</option>
                 </NativeSelect>
               </div>
+              <div className="space-y-2">
+                <Label className="text-white/72" htmlFor="keyword">关键词</Label>
+                <Input
+                  className="border-white/14 bg-white/[0.08] text-white placeholder:text-white/35"
+                  id="keyword"
+                  placeholder="默认跟随评分卡名称"
+                  value={keyword}
+                  onChange={(event) => setKeyword(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-white/72" htmlFor="city">城市</Label>
+                <Input
+                  className="border-white/14 bg-white/[0.08] text-white placeholder:text-white/35"
+                  id="city"
+                  placeholder="默认跟随评分卡地点"
+                  value={city}
+                  onChange={(event) => setCity(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-white/72" htmlFor="autoGreetThreshold">自动打招呼阈值</Label>
+                <Input
+                  className="border-white/14 bg-white/[0.08] text-white placeholder:text-white/35"
+                  id="autoGreetThreshold"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  placeholder="留空则使用评分卡 recommend 阈值"
+                  value={autoGreetThreshold}
+                  onChange={(event) => setAutoGreetThreshold(event.target.value)}
+                />
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
               <StatusBanner
                 tone="default"
-                title="会话检查"
-                description="系统不再拉起单独的 BOSS 登录浏览器。请在已安装插件的 Chrome 中手动登录 BOSS，并刷新一次 BOSS 页面，让插件把当前会话同步到本地系统。"
+                title="手动登录"
+                description="系统不再拉起单独的 BOSS 登录浏览器，也不再依赖保存会话。请在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面。"
               />
               <StatusBanner
                 tone="default"
@@ -217,14 +227,6 @@ export function TasksPage() {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <Button variant="ghost" onClick={resetSessionAndRelogin} disabled={resettingSession || savingSession}>
-                <RotateCcw className="size-4" />
-                {resettingSession ? "清空中..." : "清空已保存会话"}
-              </Button>
-              <Button variant="secondary" onClick={saveSessionOnly} disabled={savingSession || resettingSession}>
-                <Save className="size-4" />
-                {savingSession ? "检查中..." : "检查已同步的 BOSS 会话"}
-              </Button>
               <Button onClick={createAndRun} disabled={runningTask || !jobId}>
                 <PlayCircle className="size-4" />
                 {runningTask ? "执行中..." : "创建并执行 Recommend 任务"}

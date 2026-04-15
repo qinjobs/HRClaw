@@ -36,7 +36,45 @@
       </div>
     </section>
 
-    <section class="card statusCard">
+    <section class="card quickCard">
+      <div class="resultHeader">
+        <div>
+          <p class="eyebrow">JD 速览</p>
+          <h2 id="quickFitTitle">等待识别</h2>
+        </div>
+        <span id="quickFitPill" class="pill neutral">待识别</span>
+      </div>
+      <p id="quickFitMeta" class="subtle">本地秒级规则，不等待后端模型。</p>
+      <div class="listBlock">
+        <h3>命中证据</h3>
+        <ul id="quickFitMatchList" class="list"></ul>
+      </div>
+      <div class="listBlock">
+        <h3>主要缺口</h3>
+        <ul id="quickFitGapList" class="list"></ul>
+      </div>
+    </section>
+
+    <section class="card resultCard">
+      <div class="resultHeader">
+        <div>
+          <p class="eyebrow">最新结果</p>
+          <h2 id="scoreValue">-</h2>
+        </div>
+        <span id="decisionPill" class="pill neutral">待处理</span>
+      </div>
+      <p id="resultMeta" class="subtle">暂时还没有打分结果。</p>
+      <div class="listBlock">
+        <h3>主要原因</h3>
+        <ul id="reasonList" class="list"></ul>
+      </div>
+      <div class="listBlock">
+        <h3>维度分</h3>
+        <ul id="dimensionList" class="list"></ul>
+      </div>
+    </section>
+
+    <section class="card statusCard statusCompact">
       <div class="statusRow">
         <span class="label">状态</span>
       <span id="statusText" class="status neutral">等待识别候选人详情页</span>
@@ -83,44 +121,6 @@
       <div class="actions">
         <button id="saveStageButton" class="primary" type="button">保存状态</button>
         <button id="syncCandidateButton" class="secondary" type="button">刷新入库</button>
-      </div>
-    </section>
-
-    <section class="card quickCard">
-      <div class="resultHeader">
-        <div>
-          <p class="eyebrow">JD 速览</p>
-          <h2 id="quickFitTitle">等待识别</h2>
-        </div>
-        <span id="quickFitPill" class="pill neutral">待识别</span>
-      </div>
-      <p id="quickFitMeta" class="subtle">本地秒级规则，不等待后端模型。</p>
-      <div class="listBlock">
-        <h3>命中证据</h3>
-        <ul id="quickFitMatchList" class="list"></ul>
-      </div>
-      <div class="listBlock">
-        <h3>主要缺口</h3>
-        <ul id="quickFitGapList" class="list"></ul>
-      </div>
-    </section>
-
-    <section class="card resultCard">
-      <div class="resultHeader">
-        <div>
-          <p class="eyebrow">最新结果</p>
-          <h2 id="scoreValue">-</h2>
-        </div>
-        <span id="decisionPill" class="pill neutral">待处理</span>
-      </div>
-      <p id="resultMeta" class="subtle">暂时还没有打分结果。</p>
-      <div class="listBlock">
-        <h3>主要原因</h3>
-        <ul id="reasonList" class="list"></ul>
-      </div>
-      <div class="listBlock">
-        <h3>维度分</h3>
-        <ul id="dimensionList" class="list"></ul>
       </div>
     </section>
   </main>

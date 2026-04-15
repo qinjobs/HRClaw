@@ -5,6 +5,7 @@ from unittest import mock
 
 from src.screening.boss_selectors import BossSelectors
 from src.screening.gpt_extractor import GPTFieldExtractor
+from src.screening.models import CandidateDecision, ScoreResult
 from src.screening.playwright_agent import PlaywrightLocalAgent
 
 
@@ -88,6 +89,19 @@ class FakeRecommendRuntime:
         path.write_text(content, encoding="utf-8")
         return str(path)
 
+    def persist_resume_full_screenshot(self, external_id, *, suffix="resume_full"):
+        path = Path(self.tmpdir.name) / f"{external_id}_{suffix}.png"
+        path.write_bytes(b"fake")
+        return str(path)
+
+    def persist_resume_markdown(self, external_id, content, *, title=None, source_url=None, content_html=None, page_html=None, screenshot_path=None):
+        path = Path(self.tmpdir.name) / f"{external_id}.md"
+        lines = [f"# {title or external_id or '简历'}", "", content or ""]
+        if source_url:
+            lines.insert(2, f"- 来源链接：{source_url}")
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return str(path)
+
     def screenshot_base64(self):
         return "ZmFrZQ=="
 
@@ -115,7 +129,7 @@ class FakeRecommendRuntime:
     def is_login_scan_page(self):
         return self.login_scan_active
 
-    def wait_for_login_scan(self, timeout_ms=20000, check_interval_ms=1500):
+    def wait_for_login_scan(self, timeout_ms=15000, check_interval_ms=1500):
         self.login_scan_wait_calls.append((timeout_ms, check_interval_ms))
         self.login_scan_active = False
         return True
@@ -171,9 +185,31 @@ class RecommendFlowTests(unittest.TestCase):
             )
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0].evidence_map["resume_downloaded"])
+        self.assertTrue(items[0].evidence_map["resume_full_screenshot_path"].endswith(".png"))
+        self.assertTrue(items[0].evidence_map["resume_markdown_path"].endswith(".md"))
         self.assertTrue(items[0].evidence_map["auto_greet_attempted"])
         self.assertTrue(items[0].evidence_map["auto_greet_clicked"])
         self.assertTrue(items[0].evidence_map["recommend_detail_closed"])
+        self.assertEqual(runtime.greet_clicks, 1)
+
+    def test_recommend_flow_uses_scorecard_recommend_threshold_by_default(self):
+        runtime = FakeRecommendRuntime()
+        agent = PlaywrightLocalAgent(runtime=runtime, selectors=self._selectors(), extractor=FakeExtractor())
+        self.addCleanup(agent.stop_session)
+        with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_ENABLED": "true"}, clear=False):
+            with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_THRESHOLD": ""}, clear=False):
+                agent.start_session()
+                items = agent.collect_candidates(
+                    "qa_test_engineer_v1",
+                    1,
+                    search_mode="recommend",
+                    max_pages=1,
+                )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].evidence_map["auto_greet_threshold"], 57.62)
+        self.assertEqual(items[0].evidence_map["auto_greet_threshold_source"], "scorecard.recommend_min")
+        self.assertTrue(items[0].evidence_map["auto_greet_attempted"])
+        self.assertTrue(items[0].evidence_map["auto_greet_clicked"])
         self.assertEqual(runtime.greet_clicks, 1)
 
     def test_recommend_flow_skips_greet_when_score_below_threshold(self):
@@ -189,6 +225,27 @@ class RecommendFlowTests(unittest.TestCase):
                 max_pages=1,
             )
         self.assertEqual(len(items), 1)
+        self.assertFalse(items[0].evidence_map["auto_greet_attempted"])
+        self.assertFalse(items[0].evidence_map["auto_greet_clicked"])
+        self.assertEqual(items[0].evidence_map["auto_greet_reason"], "below_threshold")
+        self.assertEqual(runtime.greet_clicks, 0)
+
+    def test_recommend_flow_search_config_threshold_overrides_scorecard_threshold(self):
+        runtime = FakeRecommendRuntime()
+        agent = PlaywrightLocalAgent(runtime=runtime, selectors=self._selectors(), extractor=FakeExtractor())
+        self.addCleanup(agent.stop_session)
+        with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_ENABLED": "true", "SCREENING_AUTO_GREET_THRESHOLD": ""}, clear=False):
+            agent.start_session()
+            items = agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                search_config={"auto_greet_threshold": 999},
+                max_pages=1,
+            )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].evidence_map["auto_greet_threshold"], 999.0)
+        self.assertEqual(items[0].evidence_map["auto_greet_threshold_source"], "search_config")
         self.assertFalse(items[0].evidence_map["auto_greet_attempted"])
         self.assertFalse(items[0].evidence_map["auto_greet_clicked"])
         self.assertEqual(items[0].evidence_map["auto_greet_reason"], "below_threshold")
@@ -241,6 +298,32 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertEqual(items, [])
         self.assertEqual(runtime.opened_ids, [])
         self.assertEqual(checker_calls, [(["recommend-001"], 72.0)])
+
+    def test_recommend_flow_skips_existing_candidates_by_default(self):
+        runtime = FakeRecommendRuntime()
+        checker_calls = []
+
+        def fake_checker(external_ids, *, max_age_hours=None):
+            checker_calls.append((list(external_ids), max_age_hours))
+            return {"recommend-001"}
+
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+            existing_candidate_checker=fake_checker,
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_mode="recommend",
+            max_pages=1,
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(runtime.opened_ids, [])
+        self.assertEqual(checker_calls, [(["recommend-001"], None)])
 
     def test_recommend_flow_applies_human_browse_delay(self):
         runtime = FakeRecommendRuntime()
@@ -301,11 +384,61 @@ class RecommendFlowTests(unittest.TestCase):
             "qa_test_engineer_v1",
             1,
             search_mode="recommend",
-            search_config={"login_scan_wait_seconds": 20},
+            search_config={"login_scan_wait_seconds": 15},
             max_pages=1,
         )
         self.assertEqual(len(items), 1)
-        self.assertEqual(runtime.login_scan_wait_calls, [(20000, 1500)])
+        self.assertEqual(runtime.login_scan_wait_calls, [(15000, 1500)])
+
+    def test_recommend_flow_enriches_phase2_scoring_payload(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards[0].update(
+            {
+                "name": "候选人Java",
+                "current_title": "AI应用开发工程师",
+                "location": "深圳",
+                "summary_text": "6年 JAVA AI 应用开发经验，深圳，本科。",
+            }
+        )
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        captured_fields = {}
+
+        def fake_score_candidate(job_id, fields):
+            captured_fields["job_id"] = job_id
+            captured_fields["fields"] = dict(fields)
+            return ScoreResult(
+                hard_filter_pass=True,
+                hard_filter_fail_reasons=[],
+                dimension_scores={},
+                total_score=81.0,
+                decision=CandidateDecision.RECOMMEND,
+                review_reasons=[],
+            )
+
+        with mock.patch("src.screening.playwright_agent.score_candidate", side_effect=fake_score_candidate):
+            agent.start_session()
+            items = agent.collect_candidates(
+                "phase2_custom_java_card",
+                1,
+                search_mode="recommend",
+                max_pages=1,
+            )
+
+        self.assertEqual(len(items), 1)
+        fields = captured_fields["fields"]
+        self.assertEqual(captured_fields["job_id"], "phase2_custom_java_card")
+        self.assertEqual(fields["current_title"], "AI应用开发工程师")
+        self.assertEqual(fields["location"], "深圳")
+        self.assertEqual(fields["city"], "深圳")
+        self.assertEqual(fields["education_level"], "本科")
+        self.assertEqual(fields["years_experience"], 5)
+        self.assertIn("JAVA", fields["raw_summary"])
+        self.assertIn("测试计划", fields["page_text"])
 
     def test_recommend_flow_raises_when_manual_verification_not_cleared(self):
         class BlockingVerifyRuntime(FakeRecommendRuntime):
@@ -333,7 +466,7 @@ class RecommendFlowTests(unittest.TestCase):
 
     def test_recommend_flow_raises_when_login_scan_not_cleared(self):
         class BlockingLoginRuntime(FakeRecommendRuntime):
-            def wait_for_login_scan(self, timeout_ms=20000, check_interval_ms=1500):
+            def wait_for_login_scan(self, timeout_ms=15000, check_interval_ms=1500):
                 self.login_scan_wait_calls.append((timeout_ms, check_interval_ms))
                 return False
 
@@ -351,6 +484,6 @@ class RecommendFlowTests(unittest.TestCase):
                 "qa_test_engineer_v1",
                 1,
                 search_mode="recommend",
-                search_config={"login_scan_wait_seconds": 20},
+                search_config={"login_scan_wait_seconds": 15},
                 max_pages=1,
             )

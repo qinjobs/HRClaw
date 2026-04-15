@@ -40,7 +40,7 @@
 | Recruiter admin console | Trial hub, JD cards, batch imports, workbench views | `admin_frontend/` + `src/screening/api.py` |
 | Batch import pipeline | PDF / DOC / DOCX parsing, OCR fallback, scoring | `src/screening/phase2_imports.py` |
 | Browser capture plugin | Chrome MV3 side panel for candidate page capture | `chrome_extensions/boss_resume_score/` |
-| Local install bundles | Frontend dist, plugin zip, Windows-friendly package assets | `install/` + `release/` |
+| Local install bundles | Frontend dist, plugin zip, Windows/macOS-friendly package assets | `install/` + `release/` |
 
 ## Core Workflow
 
@@ -124,8 +124,10 @@ http://127.0.0.1:8080
 
 - `install/packages/frontend/admin_frontend-dist.tgz`
 - `install/packages/windows/admin_frontend-dist.zip`
+- `install/packages/macos/.env.local.example`
 - `install/packages/chrome_extension/boss_resume_score.zip`
 - `release/HRClaw_windows_bundle.zip`
+- `release/HRClaw_macos_bundle.zip`
 
 These are refreshed so the packaged assets match the current admin console and browser capture layer.
 

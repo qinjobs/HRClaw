@@ -236,12 +236,12 @@ def load_boss_selectors() -> BossSelectors:
         detail_main_text=_selector_tuple(
             "SCREENING_BOSS_DETAIL_TEXT_SELECTORS",
             (
+                ".dialog-wrap.active .iboss-left",
+                ".dialog-wrap.active .geek-resume-wrap",
+                ".dialog-wrap.active .resume-content",
                 ".iboss-left",
-                "div.resume-detail-wrap",
                 "div.geek-resume-wrap",
                 "div.resume-content",
-                "main",
-                "body",
             ),
         ),
         next_page=_selector_tuple(

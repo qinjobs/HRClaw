@@ -1,7 +1,7 @@
 {
-  "name": "remotion",
-  "version": "1.0.0",
-  "description": "My Remotion video",
+  "name": "hrclaw-remotion",
+  "version": "0.1.0",
+  "description": "HRClaw product promo video built with Remotion",
   "repository": {},
   "license": "UNLICENSED",
   "private": true,
@@ -24,6 +24,7 @@
   "scripts": {
     "dev": "remotion studio",
     "build": "remotion bundle",
+    "render": "remotion render HRClawPromo1080p renders/hrclaw-promo.mp4",
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc"
   },

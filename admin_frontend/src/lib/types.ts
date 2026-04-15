@@ -50,7 +50,7 @@ export interface ChecklistItem {
   task_started_at?: string | null;
   task_finished_at?: string | null;
   task_token_usage?: Record<string, number>;
-  search_config?: Record<string, string>;
+  search_config?: Record<string, unknown>;
   external_id?: string | null;
   name?: string | null;
   age?: number | null;
@@ -66,7 +66,14 @@ export interface ChecklistItem {
   final_decision?: string | null;
   reviewer?: string | null;
   greet_status?: string | null;
+  greet_detail?: Record<string, unknown> | null;
   screenshot_path?: string | null;
+  resume_full_screenshot_path?: string | null;
+  resume_full_screenshot_error?: string | null;
+  resume_full_screenshot_fallback_used?: boolean | null;
+  resume_markdown_path?: string | null;
+  resume_markdown_filename?: string | null;
+  resume_markdown_error?: string | null;
   gpt_extraction_used?: boolean | null;
   gpt_extraction_error?: string | null;
 }
@@ -98,7 +105,14 @@ export interface WorkbenchItem {
   review_final_decision?: string | null;
   reviewer?: string | null;
   greet_status?: string | null;
+  greet_detail?: Record<string, unknown> | null;
   screenshot_path?: string | null;
+  resume_full_screenshot_path?: string | null;
+  resume_full_screenshot_error?: string | null;
+  resume_full_screenshot_fallback_used?: boolean | null;
+  resume_markdown_path?: string | null;
+  resume_markdown_filename?: string | null;
+  resume_markdown_error?: string | null;
   pipeline_state?: Record<string, unknown>;
   tags?: string[];
 }

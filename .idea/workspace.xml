@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="65a45742-c854-4526-a912-4976e37852f2" name="更改" comment="">
+      <change beforePath="$PROJECT_DIR$/.env.local.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.local.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.zh-CN.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.zh-CN.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/lib/types.ts" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/lib/types.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/pages/ChecklistPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/pages/ChecklistPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/pages/LoginPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/pages/LoginPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/pages/TasksPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/pages/TasksPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/pages/TrialHubPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/pages/TrialHubPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/src/pages/WorkbenchPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/src/pages/WorkbenchPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/admin_frontend/vite.config.ts" beforeDir="false" afterPath="$PROJECT_DIR$/admin_frontend/vite.config.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/service-worker.js" beforeDir="false" afterPath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/service-worker.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/sidepanel.css" beforeDir="false" afterPath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/sidepanel.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/sidepanel.html" beforeDir="false" afterPath="$PROJECT_DIR$/chrome_extensions/boss_resume_score/sidepanel.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config.md" beforeDir="false" afterPath="$PROJECT_DIR$/config.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/中文说明书-部署与使用.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/中文说明书-部署与使用.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/install/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/install/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/install/windows/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/install/windows/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/install/windows/common.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/install/windows/common.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/install/windows/install.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/install/windows/install.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/install/windows/start_server.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/install/windows/start_server.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/marketing/remotion/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/marketing/remotion/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/marketing/remotion/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/marketing/remotion/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/marketing/remotion/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/marketing/remotion/package.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/marketing/remotion/src/Composition.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/marketing/remotion/src/Composition.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/marketing/remotion/src/Root.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/marketing/remotion/src/Root.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/LoginPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/LoginPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/TasksPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/TasksPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/TrialHubPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/src/pages/TrialHubPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/vite.config.ts" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/admin_frontend/vite.config.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/service-worker.js" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/service-worker.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/sidepanel.css" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/sidepanel.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/sidepanel.html" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/chrome_extensions/boss_resume_score/sidepanel.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/common.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/common.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/install.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/install.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/frontend/admin_frontend-dist.tgz" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/frontend/admin_frontend-dist.tgz" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/.env.local.example" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/.env.local.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/admin_frontend-dist.zip" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/packages/windows/admin_frontend-dist.zip" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/api.py" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/api.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/browser_runtime.py" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/browser_runtime.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/gpt54_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/gpt54_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/playwright_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/src/screening/playwright_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/release/HRClaw_windows_bundle/start_server.ps1" beforeDir="false" afterPath="$PROJECT_DIR$/release/HRClaw_windows_bundle/start_server.ps1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/screening/api.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/screening/api.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/screening/browser_runtime.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/screening/browser_runtime.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/screening/gpt54_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/screening/gpt54_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/screening/gpt_extractor.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/screening/gpt_extractor.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/screening/playwright_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/screening/playwright_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_api.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_api.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_browser_runtime.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_browser_runtime.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_gpt_extractor.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_gpt_extractor.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_playwright_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_playwright_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_recommend_flow.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_recommend_flow.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 2
+}]]></component>
+  <component name="ProjectId" id="3CKAKx2xZQrFhBJrucwEcDVsCCF" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "main",
+    "nodejs_package_manager_path": "npm",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-1632447f56bf-JavaScript-PY-243.25659.43" />
+        <option value="bundled-python-sdk-181015f7ab06-4df51de95216-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-243.25659.43" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="应用程序级" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="默认任务">
+      <changelist id="65a45742-c854-4526-a912-4976e37852f2" name="更改" comment="" />
+      <created>1776123828666</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1776123828666</updated>
+      <workItem from="1776123830063" duration="27000" />
+    </task>
+    <servers />
+  </component>
+</project>

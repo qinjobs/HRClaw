@@ -117,6 +117,16 @@ class FakePagedRuntime:
         path.write_bytes(b"fake")
         return str(path)
 
+    def persist_resume_full_screenshot(self, external_id, *, suffix="resume_full"):
+        path = Path(self.tmpdir.name) / f"{external_id}_{suffix}.png"
+        path.write_bytes(b"fake")
+        return str(path)
+
+    def persist_resume_markdown(self, external_id, content, *, title=None, source_url=None, content_html=None, page_html=None, screenshot_path=None):
+        path = Path(self.tmpdir.name) / f"{external_id}.md"
+        path.write_text(f"# {title or external_id}\n\n{content or ''}", encoding="utf-8")
+        return str(path)
+
     def screenshot_base64(self):
         return "ZmFrZQ=="
 
@@ -172,6 +182,8 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual([item.external_id for item in items], ["boss-1", "boss-2", "boss-3"])
         self.assertEqual(runtime.applied["search_config"]["keyword"], "测试工程师")
         self.assertEqual(items[-1].evidence_map["page_index"], 2)
+        self.assertTrue(items[0].evidence_map["resume_full_screenshot_path"].endswith(".png"))
+        self.assertTrue(items[0].evidence_map["resume_markdown_path"].endswith(".md"))
 
     def test_api_task_persists_search_config(self):
         tmpdir = tempfile.TemporaryDirectory()

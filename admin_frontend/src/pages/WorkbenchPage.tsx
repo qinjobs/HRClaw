@@ -230,6 +230,14 @@ function buildQuery(filters: WorkbenchFilters) {
   return params.toString();
 }
 
+function formatThresholdLabel(value: unknown) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return `>= ${parsed.toFixed(2)} 分`;
+  }
+  return "跟随评分卡 recommend 阈值";
+}
+
 export function WorkbenchPage() {
   const bootstrap = getBootstrap();
   const { pushToast } = useToast();
@@ -402,9 +410,21 @@ export function WorkbenchPage() {
   const detailActions = detail?.actions || [];
   const detailTimeline = detail?.timeline || [];
   const detailTags = detail?.tags || [];
+  const selectedQueueItem = items.find((entry) => entry.candidate_id === selectedCandidateId) || null;
   const detailReasons = safeList(
     detailScore.review_reasons?.length ? detailScore.review_reasons : detailScore.hard_filter_fail_reasons,
   );
+  const latestGreetAction = [...detailActions]
+    .reverse()
+    .find((entry) => entry.action_type === "send_greeting");
+  const latestGreetDetail =
+    latestGreetAction && latestGreetAction.detail && typeof latestGreetAction.detail === "object"
+      ? latestGreetAction.detail
+      : null;
+  const latestGreetStatus = String(latestGreetAction?.status || selectedQueueItem?.greet_status || "");
+  const latestGreetThreshold = latestGreetDetail?.threshold;
+  const latestGreetScore = latestGreetDetail?.score ?? detailScore.total_score;
+  const latestGreetReason = latestGreetDetail?.reason;
 
   return (
     <AppShell
@@ -690,10 +710,17 @@ export function WorkbenchPage() {
                         详情 JSON
                       </a>
                     </Button>
-                    {detailSnapshot.screenshot_path ? (
+                    {detailSnapshot.resume_full_screenshot_path || detailSnapshot.screenshot_path ? (
                       <Button variant="secondary" asChild>
                         <a href={`/api/candidates/${detailCandidate.id}/screenshot`} target="_blank" rel="noreferrer">
-                          简历截图
+                          完整简历截图
+                        </a>
+                      </Button>
+                    ) : null}
+                    {detailSnapshot.resume_markdown_path ? (
+                      <Button variant="secondary" asChild>
+                        <a href={`/api/candidates/${detailCandidate.id}/resume-markdown`} target="_blank" rel="noreferrer">
+                          Markdown 简历
                         </a>
                       </Button>
                     ) : null}
@@ -774,6 +801,36 @@ export function WorkbenchPage() {
                 </div>
 
                 <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>自动打招呼</CardTitle>
+                      <CardDescription>把这位候选人本次执行时使用的阈值、分数和动作结果放在一起，方便回头复盘。</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant={
+                            latestGreetStatus === "success"
+                              ? "success"
+                              : latestGreetStatus === "failed"
+                                ? "danger"
+                                : "warn"
+                          }
+                        >
+                          {candidateActionStatusLabels[latestGreetStatus] || latestGreetStatus || "未执行"}
+                        </Badge>
+                        {latestGreetAction?.created_at ? (
+                          <span className="text-sm text-slate-500">{formatTime(latestGreetAction.created_at)}</span>
+                        ) : null}
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-600">
+                        <div>执行阈值：{formatThresholdLabel(latestGreetThreshold)}</div>
+                        <div>候选人得分：{formatScore(latestGreetScore)}</div>
+                        <div>动作说明：{latestGreetReason || "未记录额外说明"}</div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
                   <Card>
                     <CardHeader>
                       <CardTitle>快捷动作</CardTitle>

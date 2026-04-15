@@ -356,6 +356,12 @@ def _model_precheck_error() -> str | None:
     return None
 
 
+def _with_recommend_search_defaults(search_config: dict | None) -> dict:
+    merged = dict(search_config or {})
+    merged.setdefault("skip_existing_candidates", True)
+    return merged
+
+
 def _read_json(handler) -> dict:
     length = int(_header_get(handler, "Content-Length", "0"))
     raw = handler.rfile.read(length) if length else b"{}"
@@ -634,7 +640,7 @@ def _task_runner_page_html(username: str) -> str:
     <div class="grid">
       <div class="card">
         <h1>创建并执行任务</h1>
-        <div class="muted">执行顺序已固定：HR 先在已安装插件的 Chrome 中手动登录 BOSS，插件同步当前会话，系统确认后再执行 recommend 筛选与打分。</div>
+        <div class="muted">执行顺序已固定：HR 先在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面，再执行 recommend 筛选、打分；分数达到评分卡 recommend 阈值后会自动点击“打招呼”。</div>
         <div class="form">
           <div class="field">
             <label>岗位</label>
@@ -655,10 +661,12 @@ def _task_runner_page_html(username: str) -> str:
               <option value="recent">最新优先</option>
             </select>
           </div>
+          <div class="field">
+            <label>自动打招呼阈值</label>
+            <input id="autoGreetThreshold" type="number" min="0" max="100" step="0.01" placeholder="留空则使用评分卡 recommend 阈值" />
+          </div>
         </div>
         <div class="actions">
-          <button id="resetSessionBtn" class="btn secondary" type="button">清空已保存会话</button>
-          <button id="saveSessionBtn" class="btn secondary" type="button">检查已同步的BOSS会话</button>
           <button id="runBtn" class="btn" type="button">创建并执行Recommend任务</button>
         </div>
       </div>
@@ -695,9 +703,8 @@ def _task_runner_page_html(username: str) -> str:
     const maxCandidates = document.getElementById("maxCandidates");
     const maxPages = document.getElementById("maxPages");
     const sortBy = document.getElementById("sortBy");
+    const autoGreetThreshold = document.getElementById("autoGreetThreshold");
     const logBox = document.getElementById("logBox");
-    const resetSessionBtn = document.getElementById("resetSessionBtn");
-    const saveSessionBtn = document.getElementById("saveSessionBtn");
     const runBtn = document.getElementById("runBtn");
     const logoutBtn = document.getElementById("logoutBtn");
 
@@ -723,41 +730,21 @@ def _task_runner_page_html(username: str) -> str:
       jobId.innerHTML = (data.items || []).map(item => `<option value="${{item.id}}">${{item.name}} (${{item.id}})</option>`).join("");
     }}
 
-    async function resetSessionAndRelogin() {{
-      resetSessionBtn.disabled = true;
-      log("开始清空本地已保存的 BOSS 会话...");
-      try {{
-        const data = await api("/api/boss/session/reset", {{}});
-        log(data.message || "已清空本地会话。请先在 Chrome 的 BOSS 页面手动登录，并刷新一次 BOSS 页面让插件重新同步。");
-      }} catch (err) {{
-        log(`清空旧会话失败：${{err.message}}`);
-      }} finally {{
-        resetSessionBtn.disabled = false;
-      }}
-    }}
-
-    async function saveSessionOnly() {{
-      saveSessionBtn.disabled = true;
-      log("开始检查当前 Chrome 已同步的 BOSS 会话。如果你刚手动登录 BOSS，请先刷新一次 BOSS 页面，让插件完成同步。");
-      try {{
-        const data = await api("/api/boss/session/save", {{}});
-        log(`会话检测通过并已保存：login_detected=${{data.login_detected}}, reason=${{data.reason}}`);
-      }} catch (err) {{
-        log(`会话保存失败：${{err.message}}`);
-      }} finally {{
-        saveSessionBtn.disabled = false;
-      }}
-    }}
-
     async function createAndRun() {{
       runBtn.disabled = true;
-      log("开始创建并执行任务（流程：校验已保存会话 -> recommend筛选）...");
+      log("开始创建并执行任务（流程：手动登录浏览器 -> 当前页采集 -> recommend筛选 -> 达到评分卡阈值后自动打招呼）...");
       try {{
+        const searchConfig = {{}};
+        const thresholdValue = Number(autoGreetThreshold.value);
+        if (autoGreetThreshold.value !== "" && Number.isFinite(thresholdValue)) {{
+          searchConfig.auto_greet_threshold = thresholdValue;
+        }}
         const payload = {{
           job_id: jobId.value,
           max_candidates: Number(maxCandidates.value || 50),
           max_pages: Number(maxPages.value || 30),
-          sort_by: sortBy.value
+          sort_by: sortBy.value,
+          search_config: searchConfig
         }};
         const data = await api("/api/recommend/run", payload);
         log(`任务完成：task_id=${{data.task_id}}, 处理=${{(data.result?.processed || []).length}}`);
@@ -771,8 +758,6 @@ def _task_runner_page_html(username: str) -> str:
       }}
     }}
 
-    resetSessionBtn.addEventListener("click", resetSessionAndRelogin);
-    saveSessionBtn.addEventListener("click", saveSessionOnly);
     runBtn.addEventListener("click", createAndRun);
     logoutBtn.addEventListener("click", async () => {{
       try {{
@@ -2704,7 +2689,8 @@ def _workbench_page_html(username: str) -> str:
             </div>
             <div class="detailLinks">
               <a target="_blank" href="/api/candidates/${esc(candidate.id)}">详情 JSON</a>
-              ${snapshot.screenshot_path ? `<a target="_blank" href="/api/candidates/${esc(candidate.id)}/screenshot">简历截图</a>` : ""}
+              ${(snapshot.resume_full_screenshot_path || snapshot.screenshot_path) ? `<a target="_blank" href="/api/candidates/${esc(candidate.id)}/screenshot">完整简历截图</a>` : ""}
+              ${snapshot.resume_markdown_path ? `<a target="_blank" href="/api/candidates/${esc(candidate.id)}/resume-markdown">Markdown 简历</a>` : ""}
             </div>
           </div>
 
@@ -3685,22 +3671,11 @@ def handle_request(handler):
             return _json(HTTPStatus.BAD_REQUEST, {"error": precheck_error})
 
         _force_model_env()
-        try:
-            session_summary = save_boss_storage_state(
-                wait_seconds=max(1, int(payload.get("wait_seconds", os.getenv("SCREENING_AUTH_SAVE_WAIT_SECONDS", "180")))),
-                login_url=payload.get("login_url"),
-                headless=False,
-            )
-        except Exception as exc:
-            return _json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-        if not session_summary.get("ok"):
-            return _json(
-                HTTPStatus.BAD_REQUEST,
-                {
-                    "error": session_summary.get("message") or "未检测到有效的 BOSS 登录状态，请先在打开的干净 BOSS 页面里手动登录并保存会话",
-                    "session": session_summary,
-                },
-            )
+        search_config = payload.get("search_config") if isinstance(payload.get("search_config"), dict) else {}
+        auto_greet_threshold = payload.get("auto_greet_threshold")
+        if auto_greet_threshold not in (None, "") and "auto_greet_threshold" not in search_config:
+            search_config = {**search_config, "auto_greet_threshold": auto_greet_threshold}
+        search_config = _with_recommend_search_defaults(search_config)
 
         task_id = create_task(
             {
@@ -3709,7 +3684,7 @@ def handle_request(handler):
                 "sort_by": payload.get("sort_by", "active"),
                 "max_candidates": max(1, int(payload.get("max_candidates", 50))),
                 "max_pages": max(1, int(payload.get("max_pages", 30))),
-                "search_config": {},
+                "search_config": search_config,
                 "require_hr_confirmation": True,
             }
         )
@@ -3718,13 +3693,23 @@ def handle_request(handler):
             result = orchestrator.run_task(task_id)
         except KeyError:
             return _json(HTTPStatus.NOT_FOUND, {"error": "Task not found"})
+        except Exception as exc:
+            task = get_task(task_id) or {"id": task_id}
+            task["require_hr_confirmation"] = bool(task.get("require_hr_confirmation"))
+            return _json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": f"Recommend 任务执行失败：{exc}",
+                    "task_id": task_id,
+                    "task": task,
+                },
+            )
         task = get_task(task_id) or {"id": task_id}
         return _json(
             HTTPStatus.OK,
             {
                 "task_id": task_id,
                 "task": task,
-                "session": session_summary,
                 "result": result,
             },
         )
@@ -3736,7 +3721,7 @@ def handle_request(handler):
         payload["search_mode"] = "recommend"
         payload.setdefault("sort_by", "active")
         payload.setdefault("max_pages", 1)
-        payload.setdefault("search_config", {})
+        payload["search_config"] = _with_recommend_search_defaults(payload.get("search_config") if isinstance(payload.get("search_config"), dict) else {})
         task_id = create_task(payload)
         return _json(HTTPStatus.CREATED, {"task_id": task_id})
 
@@ -3758,6 +3743,17 @@ def handle_request(handler):
             result = ORCHESTRATOR.run_task(task_id)
         except KeyError:
             return _json(HTTPStatus.NOT_FOUND, {"error": "Task not found"})
+        except Exception as exc:
+            task = get_task(task_id) or {"id": task_id}
+            task["require_hr_confirmation"] = bool(task.get("require_hr_confirmation"))
+            return _json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": f"任务执行失败：{exc}",
+                    "task_id": task_id,
+                    "task": task,
+                },
+            )
         return _json(HTTPStatus.OK, result)
 
     if method == "GET" and path.startswith("/api/tasks/"):
@@ -3871,7 +3867,7 @@ def handle_request(handler):
             if not candidate:
                 return _json(HTTPStatus.NOT_FOUND, {"error": "Candidate not found"})
             snapshot = candidate.get("snapshot") or {}
-            screenshot_path = snapshot.get("screenshot_path")
+            screenshot_path = snapshot.get("resume_full_screenshot_path") or snapshot.get("screenshot_path")
             if not screenshot_path:
                 return _json(HTTPStatus.NOT_FOUND, {"error": "Screenshot not found"})
             screenshot_file = Path(screenshot_path)
@@ -3879,6 +3875,20 @@ def handle_request(handler):
                 return _json(HTTPStatus.NOT_FOUND, {"error": f"Screenshot file missing: {screenshot_path}"})
             mime, _ = mimetypes.guess_type(str(screenshot_file))
             return _body(HTTPStatus.OK, screenshot_file.read_bytes(), mime or "application/octet-stream")
+
+        if path.endswith("/resume-markdown"):
+            candidate_id = path.split("/")[-2]
+            candidate = get_candidate(candidate_id)
+            if not candidate:
+                return _json(HTTPStatus.NOT_FOUND, {"error": "Candidate not found"})
+            snapshot = candidate.get("snapshot") or {}
+            markdown_path = snapshot.get("resume_markdown_path") or snapshot.get("evidence_map", {}).get("resume_markdown_path")
+            if not markdown_path:
+                return _json(HTTPStatus.NOT_FOUND, {"error": "Markdown resume not found"})
+            markdown_file = Path(markdown_path)
+            if not markdown_file.exists():
+                return _json(HTTPStatus.NOT_FOUND, {"error": f"Markdown file missing: {markdown_path}"})
+            return _body(HTTPStatus.OK, markdown_file.read_bytes(), "text/markdown; charset=utf-8")
 
         candidate_id = path.split("/")[-1]
         candidate = get_candidate(candidate_id)
@@ -4171,13 +4181,19 @@ def handle_request(handler):
 
       rows.innerHTML = items.map(item => {
         const modelExtraction = item.gpt_extraction_used === true ? "成功" : (item.gpt_extraction_used === false ? "回退" : "未知");
-        const screenshotLink = item.screenshot_path
-          ? `<a target="_blank" href="/api/candidates/${esc(item.candidate_id)}/screenshot">简历截图</a>`
+        const screenshotLink = (item.resume_full_screenshot_path || item.screenshot_path)
+          ? `<a target="_blank" href="/api/candidates/${esc(item.candidate_id)}/screenshot">完整简历截图</a>`
+          : "-";
+        const markdownLink = item.resume_markdown_path
+          ? `<a target="_blank" href="/api/candidates/${esc(item.candidate_id)}/resume-markdown">Markdown 简历</a>`
           : "-";
         const detailLink = `<a target="_blank" href="/api/candidates/${esc(item.candidate_id)}">详情JSON</a>`;
         const searchConfig = item.search_config || {};
         const keyword = searchConfig.keyword || "-";
         const city = searchConfig.city || "-";
+        const autoGreetRule = searchConfig.auto_greet_threshold === undefined || searchConfig.auto_greet_threshold === null || searchConfig.auto_greet_threshold === ""
+          ? "跟随评分卡 recommend 阈值"
+          : `手动设置 ≥ ${Number(searchConfig.auto_greet_threshold).toFixed(2)} 分`;
         return `
           <tr>
             <td class="mono">
@@ -4196,10 +4212,11 @@ def handle_request(handler):
             <td>
               岗位: ${esc(item.job_name || item.job_id || "-")}<br/>
               关键词: ${esc(keyword)}<br/>
-              城市: ${esc(city)}
+              城市: ${esc(city)}<br/>
+              自动打招呼: ${esc(autoGreetRule)}
             </td>
             <td>${esc(modelExtraction)}${item.gpt_extraction_error ? `<div class="error">${esc(item.gpt_extraction_error)}</div>` : ""}</td>
-            <td>${screenshotLink} | ${detailLink}</td>
+            <td>${screenshotLink}<br>${markdownLink}<br>${detailLink}</td>
           </tr>
         `;
       }).join("");

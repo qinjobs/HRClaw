@@ -1614,51 +1614,12 @@ try {
     }
 
     async function syncBossSession(tab, reason) {
-      if (!tab || !isBossUrl(tab.url)) {
-        return { ok: false, skipped: true, reason: "not_boss_tab" };
-      }
-      if (bossSessionSyncInFlight) {
-        return bossSessionSyncInFlight;
-      }
-      bossSessionSyncInFlight = (async function () {
-        const cookies = await listBossCookies();
-        if (!cookies.length) {
-          return { ok: false, skipped: true, reason: "cookies_not_found" };
-        }
-        const fingerprint = buildBossCookieFingerprint(cookies);
-        const now = Date.now();
-        if (fingerprint === bossSessionSyncFingerprint && now - bossSessionSyncedAt < 15000) {
-          return { ok: true, skipped: true, reason: "recent_sync_reused" };
-        }
-        const browserSnapshot = await collectBossSessionSnapshot(chromeApi, tab.id);
-        const backendBaseUrl = await getBackendBaseUrl();
-        const response = await fetchImpl(backendBaseUrl + "/api/boss/session/sync", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            source: "chrome_extension",
-            browser: "chrome",
-            sync_reason: String(reason || "tab_event"),
-            current_url: String(tab.url || ""),
-            cookies: cookies,
-            browser_snapshot: browserSnapshot
-          })
-        });
-        const payload = await response.json().catch(function () {
-          return {};
-        });
-        if (!response.ok || !payload || payload.ok === false) {
-          throw new Error((payload && payload.error) || "boss_session_sync_failed");
-        }
-        bossSessionSyncFingerprint = fingerprint;
-        bossSessionSyncedAt = now;
-        return payload;
-      })();
-      try {
-        return await bossSessionSyncInFlight;
-      } finally {
-        bossSessionSyncInFlight = null;
-      }
+      return {
+        ok: true,
+        skipped: true,
+        reason: "manual_login_mode",
+        message: "Session sync is disabled. Manual login plus current-page capture is now the default flow."
+      };
     }
 
     function scheduleCandidateIngest(tabId, frameId, context) {
@@ -1711,17 +1672,12 @@ try {
           return Object.assign({ ok: true }, payload);
         }
         if (message.type === "boss_resume_score:sync-boss-session") {
-          const targetTab = message.tabId !== undefined
-            ? await callbackToPromise(function (done) {
-              chromeApi.tabs.get(message.tabId, done);
-            })
-            : await callbackToPromise(function (done) {
-              chromeApi.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-                done((tabs || [])[0] || null);
-              });
-            });
-          const payload = await syncBossSession(targetTab, message.reason || "manual_message");
-          return Object.assign({ ok: true }, payload);
+          return {
+            ok: true,
+            skipped: true,
+            reason: "manual_login_mode",
+            message: "Session sync is disabled. Manual login plus current-page capture is now the default flow."
+          };
         }
         if (message.type === "boss_resume_score:page-context-signal") {
           if (sender && sender.tab && sender.tab.id !== undefined) {
@@ -1735,11 +1691,6 @@ try {
             notifyContextUpdate(sender.tab.id, sender.frameId || 0, payload);
             if (payload && payload.isDetail && payload.pageText) {
               scheduleCandidateIngest(sender.tab.id, sender.frameId || 0, payload);
-            }
-            if (sender.tab.url && isBossUrl(sender.tab.url)) {
-              syncBossSession(sender.tab, "page_context_signal").catch(function () {
-                return undefined;
-              });
             }
           }
           return { ok: true };
@@ -1859,11 +1810,6 @@ try {
       chromeApi.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
         if (changeInfo && changeInfo.status === "complete") {
           syncSidePanelForTab(chromeApi, tabId, tab);
-          if (tab && isBossUrl(tab.url)) {
-            syncBossSession(tab, "tab_updated").catch(function () {
-              return undefined;
-            });
-          }
         }
       });
     }
@@ -1872,11 +1818,6 @@ try {
       chromeApi.tabs.onActivated.addListener(function (activeInfo) {
         chromeApi.tabs.get(activeInfo.tabId, function (tab) {
           syncSidePanelForTab(chromeApi, activeInfo.tabId, tab);
-          if (tab && isBossUrl(tab.url)) {
-            syncBossSession(tab, "tab_activated").catch(function () {
-              return undefined;
-            });
-          }
         });
       });
     }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import re
 import time
@@ -9,7 +10,27 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - optional dependency
+    Image = None
+
+try:
+    import html2text
+except ImportError:  # pragma: no cover - optional dependency
+    html2text = None
+
+try:
+    from readability import Document
+except ImportError:  # pragma: no cover - optional dependency
+    Document = None
+
+try:
+    from lxml import html as lxml_html
+except ImportError:  # pragma: no cover - optional dependency
+    lxml_html = None
 
 try:
     from playwright.sync_api import sync_playwright
@@ -21,6 +42,73 @@ from .boss_selectors import BossSelectors
 
 class BrowserRuntimeError(RuntimeError):
     pass
+
+
+_RESUME_NOISE_LINES = {
+    "收藏",
+    "不合适",
+    "举报",
+    "转发牛人",
+    "打招呼",
+    "立即沟通",
+    "立即开聊",
+    "下载简历",
+    "经历概览",
+    "同事沟通",
+    "我的沟通",
+    "继续沟通",
+    "推荐牛人",
+    "招聘规范",
+    "我的客服",
+    "面试",
+    "招聘数据",
+    "账号权益",
+    "升级VIP",
+    "BOSS直聘",
+    "职位管理",
+    "搜索",
+    "沟通",
+    "意向沟通",
+    "互动",
+    "牛人管理",
+    "道具",
+    "工具箱",
+    "更多",
+    "客户端",
+    "立即下载",
+    "首充礼",
+}
+
+_RESUME_POSITIVE_MARKERS = (
+    "工作经历",
+    "项目经历",
+    "最近关注",
+    "个人优势",
+    "个人简介",
+    "期望职位",
+    "项目简介",
+    "具体内容",
+    "项目职责",
+    "教育经历",
+)
+
+_RESUME_NEGATIVE_MARKERS = (
+    "其他名校毕业的牛人",
+    "相似牛人",
+    "更多牛人",
+    "牛人最近7天沟通过的职位",
+    "同事沟通",
+    "我的沟通",
+    "Ta向",
+)
+
+_RESUME_NOISE_FRAGMENTS = (
+    "Ta向",
+    "同事沟通",
+    "我的沟通",
+    "其他名校毕业的牛人",
+    "牛人最近7天沟通过的职位",
+)
 
 
 class PlaywrightBrowserRuntime:
@@ -35,6 +123,8 @@ class PlaywrightBrowserRuntime:
         storage_state_path: Path | None = None,
         load_storage_state: bool = True,
         persist_storage_state_on_stop: bool = True,
+        cdp_url: str | None = None,
+        cdp_port: int | str | None = None,
     ) -> None:
         self.width = width
         self.height = height
@@ -54,6 +144,15 @@ class PlaywrightBrowserRuntime:
             if configured_storage_state
             else Path(__file__).resolve().parents[2] / "data" / "auth" / "boss_storage_state.json"
         )
+        configured_cdp_url = os.getenv("SCREENING_BROWSER_CDP_URL")
+        configured_cdp_port = os.getenv("SCREENING_BROWSER_CDP_PORT")
+        self.cdp_url = self._normalize_cdp_url(
+            cdp_url
+            or configured_cdp_url
+            or configured_cdp_port
+            or cdp_port
+        )
+        self.attached_to_existing_browser = bool(self.cdp_url)
         self.load_storage_state = load_storage_state
         self.persist_storage_state_on_stop = persist_storage_state_on_stop
         self.session_id: str | None = None
@@ -61,6 +160,10 @@ class PlaywrightBrowserRuntime:
         self._browser = None
         self._context = None
         self._page = None
+        self._owns_page = False
+        self._owns_browser = False
+        self._owns_context = False
+        self._resume_ocr_backend = None
 
     def start(self) -> str:
         if sync_playwright is None:
@@ -70,17 +173,44 @@ class PlaywrightBrowserRuntime:
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.resume_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self.headless)
-        context_kwargs: dict[str, Any] = {
-            "viewport": {"width": self.width, "height": self.height},
-            "accept_downloads": True,
-        }
-        if self.load_storage_state and self.storage_state_path.exists():
-            context_kwargs["storage_state"] = str(self.storage_state_path)
-        self._context = self._browser.new_context(**context_kwargs)
-        self._page = self._context.new_page()
-        if self.start_url:
-            self._page.goto(self.start_url, wait_until="domcontentloaded")
+        if self.cdp_url:
+            self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            self._owns_browser = False
+            contexts = list(getattr(self._browser, "contexts", []) or [])
+            if not contexts:
+                raise BrowserRuntimeError(
+                    f"No browser context available on attached Chrome session: {self.cdp_url}. "
+                    "Start Chrome with a visible profile and remote debugging enabled."
+                )
+            self._context = contexts[0]
+            self._owns_context = False
+            self._page = self._select_attached_page(self._context.pages)
+            if self._page is None:
+                self._page = self._context.new_page()
+                self._owns_page = True
+            else:
+                self._owns_page = False
+            if self.start_url and self._is_blank_page_url(self._page.url):
+                self._page.goto(self.start_url, wait_until="domcontentloaded")
+        else:
+            launch_kwargs: dict[str, Any] = {"headless": self.headless}
+            executable_path = self._resolve_browser_executable_path()
+            if executable_path is not None:
+                launch_kwargs["executable_path"] = str(executable_path)
+            self._browser = self._playwright.chromium.launch(**launch_kwargs)
+            self._owns_browser = True
+            context_kwargs: dict[str, Any] = {
+                "viewport": {"width": self.width, "height": self.height},
+                "accept_downloads": True,
+            }
+            if self.load_storage_state and self.storage_state_path.exists():
+                context_kwargs["storage_state"] = str(self.storage_state_path)
+            self._context = self._browser.new_context(**context_kwargs)
+            self._owns_context = True
+            self._page = self._context.new_page()
+            self._owns_page = True
+            if self.start_url:
+                self._page.goto(self.start_url, wait_until="domcontentloaded")
         return self.session_id
 
     @property
@@ -104,6 +234,10 @@ class PlaywrightBrowserRuntime:
         if not self.screenshot_full_page:
             return self._page.screenshot(type="png")
 
+        stitched_resume = self._capture_resume_scrollable_panel()
+        if stitched_resume is not None:
+            return stitched_resume
+
         self._prepare_long_resume_capture()
         try:
             return self._page.screenshot(type="png", full_page=True)
@@ -111,6 +245,97 @@ class PlaywrightBrowserRuntime:
             return self._page.screenshot(type="png")
         finally:
             self._restore_scroll_after_capture()
+
+    def _resume_screenshot_bytes(self) -> bytes:
+        if self._page is None:
+            raise BrowserRuntimeError("Browser session not started.")
+        target = self._find_resume_content_target()
+        if target is not None:
+            stitched_resume = self._capture_resume_scrollable_panel(target=target)
+            if stitched_resume is not None:
+                return stitched_resume
+            _root, locator, _metrics = target
+            try:
+                return locator.screenshot(type="png")
+            except Exception:
+                pass
+        clipped = self._capture_resume_dialog_left_clip()
+        if clipped is not None:
+            return clipped
+        raise BrowserRuntimeError("No resume content container found for full resume screenshot.")
+
+    def _capture_resume_dialog_left_clip(self) -> bytes | None:
+        page = self._require_page()
+        try:
+            clip = page.evaluate(
+                """
+                () => {
+                  const dialog =
+                    document.querySelector('.dialog-wrap.active')
+                    || document.querySelector("div[data-type='boss-dialog'].active")
+                    || document.querySelector('[role="dialog"]');
+                  if (!dialog) return null;
+                  const dialogRect = dialog.getBoundingClientRect();
+                  const dialogWidth = dialogRect.width || 0;
+                  const dialogHeight = dialogRect.height || 0;
+                  if (dialogWidth < 600 || dialogHeight < 200) return null;
+
+                  const candidates = [...dialog.querySelectorAll('*')];
+                  let best = null;
+                  let bestScore = -Infinity;
+                  for (const el of candidates) {
+                    if (!(el instanceof HTMLElement)) continue;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width < 420 || rect.height < 180) continue;
+                    if (rect.left < dialogRect.left || rect.right > dialogRect.right) continue;
+                    const centerX = rect.left + rect.width / 2;
+                    if (centerX > dialogRect.left + dialogWidth * 0.52) continue;
+                    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (text.length < 80) continue;
+                    let score = text.length + rect.width * 2 + rect.height;
+                    if (el.scrollHeight > el.clientHeight + 40) score += 12000;
+                    if (rect.width > dialogWidth * 0.7) score -= 20000;
+                    if (rect.width > dialogWidth * 0.62) score -= 12000;
+                    if (rect.left < dialogRect.left + dialogWidth * 0.08) score -= 12000;
+                    if (/\\b\\d{2}岁\\b/.test(text)) score += 4000;
+                    if (/(本科|硕士|博士|大专)/.test(text)) score += 2500;
+                    if (/(工作经历|项目经历|最近关注|期望职位)/.test(text)) score += 3500;
+                    if (text.includes('经历概览') || text.includes('其他名校毕业的牛人')) score -= 30000;
+                    if (score > bestScore) {
+                      best = rect;
+                      bestScore = score;
+                    }
+                  }
+
+                  const rect = best || {
+                    left: dialogRect.left + Math.max(32, dialogWidth * 0.06),
+                    top: dialogRect.top,
+                    width: Math.max(420, dialogWidth * 0.58),
+                    height: dialogHeight,
+                  };
+                  const clipLeft = Math.max(dialogRect.left + dialogWidth * 0.08, rect.left);
+                  const clipWidth = Math.min(
+                    rect.width,
+                    dialogWidth * 0.62,
+                    dialogRect.right - clipLeft
+                  );
+                  return {
+                    x: Math.max(0, clipLeft),
+                    y: Math.max(0, rect.top),
+                    width: Math.max(1, clipWidth),
+                    height: Math.max(1, Math.min(rect.height, dialogRect.bottom - rect.top)),
+                  };
+                }
+                """
+            )
+        except Exception:
+            return None
+        if not clip:
+            return None
+        try:
+            return page.screenshot(type="png", clip=clip)
+        except Exception:
+            return None
 
     def screenshot_base64(self) -> str:
         return base64.b64encode(self.screenshot_bytes()).decode("utf-8")
@@ -124,6 +349,85 @@ class PlaywrightBrowserRuntime:
         path = session_dir / f"{safe_label}.png"
         path.write_bytes(self.screenshot_bytes())
         return str(path)
+
+    def persist_resume_full_screenshot(self, external_id: str, *, suffix: str = "resume_full") -> str:
+        safe = self._safe_id(external_id or f"resume-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
+        if self.session_id is None:
+            raise BrowserRuntimeError("Browser session not started.")
+        session_dir = self.screenshot_dir / self.session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        path = session_dir / f"{safe}_{suffix}.png"
+        path.write_bytes(self._resume_screenshot_bytes())
+        return str(path)
+
+    def persist_resume_markdown(
+        self,
+        external_id: str,
+        content: str,
+        *,
+        title: str | None = None,
+        source_url: str | None = None,
+        content_html: str | None = None,
+        page_html: str | None = None,
+        screenshot_path: str | None = None,
+    ) -> str:
+        safe = self._safe_id(external_id or f"resume-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
+        session_dir = self._resume_session_dir()
+        path = session_dir / f"{safe}.md"
+        scroll_capture = self._extract_resume_scrollable_content()
+        rendered_body = self._build_resume_markdown_body(
+            content or "",
+            content_html=content_html,
+            page_html=page_html,
+            scroll_text=scroll_capture.get("text"),
+            scroll_html_fragments=scroll_capture.get("html_fragments") or (),
+            screenshot_path=screenshot_path,
+        )
+        lines = [
+            f"# {title or external_id or '简历'}",
+            "",
+            f"- 外部ID：{external_id or '-'}",
+        ]
+        if source_url:
+            lines.append(f"- 来源链接：{source_url}")
+        lines.extend(
+            [
+                f"- 归档时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                "",
+                "## 简历正文",
+                "",
+                rendered_body,
+                "",
+            ]
+        )
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return str(path)
+
+    def persist_resume_archive(
+        self,
+        external_id: str,
+        content: str,
+        *,
+        title: str | None = None,
+        source_url: str | None = None,
+        content_html: str | None = None,
+        page_html: str | None = None,
+    ) -> dict[str, str]:
+        screenshot_path = self.persist_resume_full_screenshot(external_id)
+        markdown_path = self.persist_resume_markdown(
+            external_id,
+            content,
+            title=title,
+            source_url=source_url,
+            content_html=content_html,
+            page_html=page_html,
+            screenshot_path=screenshot_path,
+        )
+        return {
+            "resume_full_screenshot_path": screenshot_path,
+            "resume_markdown_path": markdown_path,
+            "resume_markdown_filename": Path(markdown_path).name,
+        }
 
     def goto(self, url: str) -> str:
         page = self._require_page()
@@ -181,7 +485,7 @@ class PlaywrightBrowserRuntime:
     def wait_for_login_scan(
         self,
         *,
-        timeout_ms: int = 20000,
+        timeout_ms: int = 15000,
         check_interval_ms: int = 1500,
     ) -> bool:
         page = self._require_page()
@@ -205,10 +509,6 @@ class PlaywrightBrowserRuntime:
         current_url = (self.current_url or "").lower()
         if any(token in current_url for token in ("/safe/verify-slider", "/safe/verify", "verify-slider")):
             return True
-        try:
-            body_text = page.locator("body").inner_text()[:2000]
-        except Exception:
-            return False
         markers = (
             "请完成验证",
             "点击按钮开始验证",
@@ -217,7 +517,42 @@ class PlaywrightBrowserRuntime:
             "请点击图中",
             "verify-slider",
         )
-        return any(marker in body_text for marker in markers)
+        visible_selectors = (
+            "iframe[src*='verify']",
+            "iframe[src*='captcha']",
+            "iframe[title*='验证']",
+            "iframe[title*='verify']",
+            "[class*='verify']",
+            "[class*='captcha']",
+            "[class*='slider']",
+            "[role='dialog']",
+            "div.dialog-wrap.active",
+            "div[aria-modal='true']",
+        )
+        for selector in visible_selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+            except Exception:
+                continue
+            for index in range(min(count, 3)):
+                try:
+                    element = locator.nth(index)
+                    if not element.is_visible():
+                        continue
+                    text = ""
+                    try:
+                        text = element.inner_text(timeout=1000)[:2000]
+                    except Exception:
+                        text = ""
+                    if any(marker in text for marker in markers):
+                        return True
+                    # A visible iframe with verify/captcha in the selector is already a strong signal.
+                    if selector.startswith("iframe["):
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def wait_for_manual_verification(
         self,
@@ -560,8 +895,28 @@ class PlaywrightBrowserRuntime:
         return str(path)
 
     def extract_detail_payload(self, selectors: BossSelectors) -> dict[str, Any]:
-        text = self.text_content_any(selectors.detail_main_text) or self.text_content_any(("body",)) or ""
-        return {"detail_url": self.current_url, "page_text": text.strip()}
+        best_target = self._find_resume_content_target(selectors)
+        scroll_capture = self._extract_resume_scrollable_content(target=best_target)
+        best_content = self._extract_best_resume_content(selectors, target=best_target)
+        text = (
+            self._cleanup_resume_text(scroll_capture.get("text"))
+            or best_content.get("text")
+            or self.text_content_any(self._resume_detail_selectors(selectors))
+            or ""
+        )
+        content_html = (
+            scroll_capture.get("html")
+            or best_content.get("html")
+            or self.html_content_any(self._resume_detail_selectors(selectors))
+        )
+        page_html = self.page_html()
+        return {
+            "detail_url": self.current_url,
+            "page_text": text.strip(),
+            "content_html": content_html,
+            "page_html": page_html,
+            "content_selector": best_content.get("selector") or scroll_capture.get("selector"),
+        }
 
     def apply_sort(self, selectors: BossSelectors, sort_by: str) -> bool:
         scope = self._resolve_search_scope(selectors)
@@ -603,6 +958,67 @@ class PlaywrightBrowserRuntime:
             return locator.first.inner_text().strip()
         except Exception:
             return None
+
+    def html_content_any(self, selectors: Sequence[str], *, scope=None) -> str | None:
+        locator = self._locator_for_any(selectors, scope=scope)
+        if locator is None:
+            return None
+        try:
+            return locator.first.inner_html()
+        except Exception:
+            return None
+
+    def page_html(self) -> str | None:
+        page = self._require_page()
+        try:
+            return page.content()
+        except Exception:
+            return None
+
+    def _extract_best_resume_content(self, selectors: BossSelectors, *, target=None) -> dict[str, str]:
+        if target is not None:
+            try:
+                _root, locator, _metrics = target
+                text = self._cleanup_resume_text(locator.inner_text())
+                html = locator.inner_html()
+                selector = locator.evaluate("(el) => el.className || el.id || el.tagName.toLowerCase()") or ""
+                return {"text": text, "html": html, "selector": selector}
+            except Exception:
+                pass
+        page = self._require_page()
+        roots = [page, *page.frames]
+        selector_pool = list(dict.fromkeys(self._resume_detail_selectors(selectors)))
+        best: dict[str, str] = {"text": "", "html": "", "selector": ""}
+        best_score = -1
+        for root in roots:
+            for selector in selector_pool:
+                locator = root.locator(selector)
+                try:
+                    count = min(locator.count(), 3)
+                except Exception:
+                    continue
+                for index in range(count):
+                    node = locator.nth(index)
+                    try:
+                        text = node.inner_text().strip()
+                    except Exception:
+                        continue
+                    cleaned = self._cleanup_resume_text(text)
+                    if len(cleaned) < 40:
+                        continue
+                    score = len(cleaned) + self._resume_content_bonus(selector, cleaned)
+                    try:
+                        html = node.inner_html()
+                    except Exception:
+                        html = ""
+                    if score > best_score:
+                        best = {"text": cleaned, "html": html, "selector": selector}
+                        best_score = score
+                if best_score > 900:
+                    break
+            if best_score > 900:
+                break
+        return best
 
     def fill_first(self, selectors: Sequence[str], value: str, *, scope=None) -> bool:
         locator = self._locator_for_any(selectors, scope=scope)
@@ -677,17 +1093,104 @@ class PlaywrightBrowserRuntime:
             if self.persist_storage_state_on_stop:
                 self.save_storage_state()
         finally:
-            if self._context is not None:
+            if self._page is not None and self._owns_page:
+                try:
+                    self._page.close()
+                except Exception:
+                    pass
+            if self._context is not None and self._owns_context:
                 self._context.close()
-            if self._browser is not None:
+            if self._browser is not None and self._owns_browser:
                 self._browser.close()
             if self._playwright is not None:
                 self._playwright.stop()
+            self._page = None
+            self._context = None
+            self._browser = None
+            self._playwright = None
+            self._owns_page = False
+            self._owns_context = False
+            self._owns_browser = False
+
+    @staticmethod
+    def _normalize_cdp_url(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.isdigit():
+            return f"http://127.0.0.1:{text}"
+        if text.startswith(("http://", "https://", "ws://", "wss://")):
+            parsed = urlparse(text)
+            if parsed.hostname in {"localhost", "::1"}:
+                host = "127.0.0.1"
+                netloc = host
+                if parsed.port:
+                    netloc = f"{host}:{parsed.port}"
+                return urlunparse(parsed._replace(netloc=netloc))
+            return text
+        if re.fullmatch(r"\d+", text):
+            return f"http://127.0.0.1:{text}"
+        return text
+
+    @staticmethod
+    def _is_blank_page_url(url: str | None) -> bool:
+        normalized = (url or "").strip().lower()
+        return not normalized or normalized in {"about:blank", "chrome://newtab/", "chrome://newtab"}
+
+    def _select_attached_page(self, pages: Sequence[Any]) -> Any | None:
+        if not pages:
+            return None
+        preferred_hosts = ("zhipin.com", "localhost", "127.0.0.1")
+        preferred_fragments = (
+            "/web/chat/",
+            "/web/frame/",
+            "/web/user/",
+            "/web/recommend/",
+            "/login",
+        )
+        candidates = list(pages)
+        for page in reversed(candidates):
+            try:
+                url = (page.url or "").lower()
+            except Exception:
+                continue
+            if self._is_blank_page_url(url):
+                continue
+            if any(host in url for host in preferred_hosts) and any(fragment in url for fragment in preferred_fragments):
+                return page
+        for page in reversed(candidates):
+            try:
+                url = (page.url or "").lower()
+            except Exception:
+                continue
+            if self._is_blank_page_url(url):
+                continue
+            if any(host in url for host in preferred_hosts):
+                return page
+        for page in reversed(candidates):
+            try:
+                url = (page.url or "").lower()
+            except Exception:
+                continue
+            if not self._is_blank_page_url(url):
+                return page
+        return None
 
     def _require_page(self):
         if self._page is None:
             raise BrowserRuntimeError("Browser session not started.")
         return self._page
+
+    def _resolve_browser_executable_path(self) -> Path | None:
+        configured = os.getenv("SCREENING_BROWSER_EXECUTABLE_PATH", "").strip()
+        if not configured:
+            return None
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return path if path.exists() else None
 
     def _resolve_search_scope(self, selectors: BossSelectors):
         return self._resolve_scope(selectors.search_frame_name, selectors.search_frame_url_contains)
@@ -881,6 +1384,311 @@ class PlaywrightBrowserRuntime:
     def _safe_id(value: str) -> str:
         return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:120]
 
+    def _build_resume_markdown_body(
+        self,
+        content: str,
+        *,
+        content_html: str | None = None,
+        page_html: str | None = None,
+        scroll_text: str | None = None,
+        scroll_html_fragments: Sequence[str] = (),
+        screenshot_path: str | None = None,
+    ) -> str:
+        markdown = self._render_resume_html_to_markdown(
+            content_html=content_html,
+            page_html=page_html,
+            scroll_html_fragments=scroll_html_fragments,
+            screenshot_path=screenshot_path,
+        )
+        if markdown:
+            return markdown
+        fallback_text = self._cleanup_resume_text(scroll_text) or self._cleanup_resume_text(content)
+        return fallback_text or "_暂无可提取文本_"
+
+    def _render_resume_html_to_markdown(
+        self,
+        *,
+        content_html: str | None = None,
+        page_html: str | None = None,
+        scroll_html_fragments: Sequence[str] = (),
+        screenshot_path: str | None = None,
+    ) -> str | None:
+        ocr_markdown = self._ocr_resume_markdown_from_image(screenshot_path)
+        if ocr_markdown:
+            return ocr_markdown
+
+        candidates: list[str] = []
+        if lxml_html is not None and html2text is not None:
+            merged_scroll_markdown = self._merge_scroll_html_fragments_to_markdown(scroll_html_fragments)
+            if merged_scroll_markdown:
+                candidates.append(merged_scroll_markdown)
+            cleaned_fragment = self._clean_resume_html_fragment(content_html)
+            if cleaned_fragment:
+                rendered = self._html_fragment_to_markdown(cleaned_fragment)
+                if rendered:
+                    candidates.append(rendered)
+
+            readability_fragment = self._readability_resume_html(page_html)
+            if readability_fragment:
+                rendered = self._html_fragment_to_markdown(readability_fragment)
+                if rendered and rendered not in candidates:
+                    candidates.append(rendered)
+
+        best_markdown: str | None = None
+        best_score = float("-inf")
+        for rendered in candidates:
+            if not rendered:
+                continue
+            score = self._resume_markdown_quality_score(rendered)
+            if score > best_score:
+                best_markdown = rendered
+                best_score = score
+        return best_markdown
+
+    def _merge_scroll_html_fragments_to_markdown(self, fragments: Sequence[str]) -> str | None:
+        markdown_blocks: list[str] = []
+        seen_signatures: set[str] = set()
+        for fragment in fragments:
+            cleaned = self._clean_resume_html_fragment(fragment)
+            if not cleaned:
+                continue
+            rendered = self._html_fragment_to_markdown(cleaned)
+            if not rendered:
+                continue
+            signature = hashlib.sha1(rendered.encode("utf-8")).hexdigest()
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            markdown_blocks.append(rendered)
+        if not markdown_blocks:
+            return None
+        return self._merge_markdown_blocks(markdown_blocks)
+
+    def _clean_resume_html_fragment(self, content_html: str | None) -> str | None:
+        if not content_html or lxml_html is None:
+            return None
+        try:
+            root = lxml_html.fragment_fromstring(content_html, create_parent="div")
+        except Exception:
+            try:
+                root = lxml_html.fromstring(f"<div>{content_html}</div>")
+            except Exception:
+                return None
+
+        for xpath in (
+            ".//script",
+            ".//style",
+            ".//noscript",
+            ".//svg",
+            ".//canvas",
+            ".//iframe",
+            ".//button",
+            ".//input",
+            ".//select",
+            ".//textarea",
+        ):
+            for node in root.xpath(xpath):
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+
+        class_keywords = (
+            "button-list",
+            "btn",
+            "action",
+            "toolbar",
+            "operate",
+            "operation",
+            "report",
+            "collect",
+            "header-right",
+            "topbar",
+            "tool",
+        )
+        for node in list(root.iter()):
+            class_id = " ".join(
+                str(node.attrib.get(key, "")).lower()
+                for key in ("class", "id", "data-role", "data-name")
+            )
+            if any(keyword in class_id for keyword in class_keywords):
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+                continue
+            text = re.sub(r"\s+", " ", "".join(node.itertext())).strip()
+            if text in _RESUME_NOISE_LINES:
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+
+        return lxml_html.tostring(root, encoding="unicode", method="html")
+
+    def _readability_resume_html(self, page_html: str | None) -> str | None:
+        if not page_html or Document is None:
+            return None
+        try:
+            summary = Document(page_html).summary(html_partial=True)
+        except Exception:
+            return None
+        return self._clean_resume_html_fragment(summary)
+
+    def _html_fragment_to_markdown(self, html_fragment: str | None) -> str | None:
+        if not html_fragment or html2text is None:
+            return None
+        try:
+            renderer = html2text.HTML2Text()
+            renderer.body_width = 0
+            renderer.ignore_links = True
+            renderer.ignore_images = True
+            renderer.ignore_emphasis = False
+            renderer.single_line_break = False
+            markdown = renderer.handle(html_fragment)
+        except Exception:
+            return None
+        cleaned = self._cleanup_resume_text(markdown)
+        return cleaned or None
+
+    @staticmethod
+    def _resume_markdown_quality_score(markdown: str) -> int:
+        lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+        if not lines:
+            return -1
+        noise_hits = sum(1 for line in lines if line in _RESUME_NOISE_LINES)
+        heading_hits = sum(1 for line in lines if line.startswith(("#", "-", "*")))
+        long_lines = sum(1 for line in lines if len(line) >= 28)
+        very_long_lines = sum(1 for line in lines if len(line) >= 48)
+        date_like_lines = sum(1 for line in lines if re.search(r"\d{4}[./-]\d{1,2}\s*[-至]\s*\d{4}[./-]\d{1,2}|至今|^\d+年\d+个月?$", line))
+        bullet_like_lines = sum(1 for line in lines if re.match(r"^\d+[.、]", line))
+        marker_bonus = sum(1 for marker in _RESUME_POSITIVE_MARKERS if marker in markdown)
+        negative_hits = sum(1 for marker in _RESUME_NEGATIVE_MARKERS if marker in markdown)
+        score = len("".join(lines)) + heading_hits * 8 - noise_hits * 60
+        score += long_lines * 180 + very_long_lines * 300 + bullet_like_lines * 500 + marker_bonus * 1200
+        score -= negative_hits * 25000
+        if long_lines == 0:
+            score -= 18000
+        if date_like_lines > max(3, long_lines * 1.4):
+            score -= 9000
+        return score
+
+    def _ocr_resume_markdown_from_image(self, screenshot_path: str | None) -> str | None:
+        if not screenshot_path:
+            return None
+        image_path = Path(screenshot_path)
+        if not image_path.exists():
+            return None
+        backend = self._get_resume_ocr_backend()
+        if backend is None or not backend.enabled():
+            return None
+        try:
+            text = backend.extract_text(image_path)
+        except Exception:
+            return None
+        return self._cleanup_resume_text(text) or None
+
+    def _get_resume_ocr_backend(self):
+        if self._resume_ocr_backend is not None:
+            return self._resume_ocr_backend
+        try:
+            from .phase2_imports import PaddleOCRBackend
+        except Exception:
+            return None
+        self._resume_ocr_backend = PaddleOCRBackend()
+        return self._resume_ocr_backend
+
+    @staticmethod
+    def _cleanup_resume_text(text: str | None) -> str:
+        raw_lines = [re.sub(r"\s+", " ", (line or "")).strip() for line in str(text or "").splitlines()]
+        filtered: list[str] = []
+        last_blank = False
+        for line in raw_lines:
+            if not line:
+                if filtered and not last_blank:
+                    filtered.append("")
+                last_blank = True
+                continue
+            if line in _RESUME_NOISE_LINES:
+                continue
+            if any(fragment in line for fragment in _RESUME_NOISE_FRAGMENTS):
+                continue
+            filtered.append(line)
+            last_blank = False
+        meta_index = next(
+            (
+                index
+                for index, line in enumerate(filtered)
+                if re.search(r"\d{2}岁", line)
+                or (
+                    re.search(r"(本科|硕士|博士|大专)", line)
+                    and re.search(r"(离职-|在职-|随时到岗|考虑机会)", line)
+                )
+            ),
+            None,
+        )
+        if meta_index is not None and meta_index > 0:
+            preserved_prefix: list[str] = []
+            for line in filtered[max(0, meta_index - 3):meta_index]:
+                normalized = line.strip()
+                if not normalized:
+                    continue
+                if re.search(r"[A-Za-z]{2,}", normalized):
+                    continue
+                if len(normalized) <= 8 or normalized in {"刚刚活跃", "在线", "离线", "活跃"}:
+                    preserved_prefix.append(normalized)
+            filtered = preserved_prefix[-2:] + filtered[meta_index:]
+        while filtered and not filtered[-1]:
+            filtered.pop()
+        return "\n".join(filtered).strip()
+
+    @staticmethod
+    def _merge_markdown_blocks(blocks: Sequence[str]) -> str:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for block in blocks:
+            lines = [line.rstrip() for line in block.splitlines()]
+            chunk: list[str] = []
+            for line in lines:
+                normalized = re.sub(r"\s+", " ", line).strip()
+                if not normalized:
+                    if chunk and chunk[-1] != "":
+                        chunk.append("")
+                    continue
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                chunk.append(line)
+            while chunk and chunk[-1] == "":
+                chunk.pop()
+            if chunk:
+                if merged and merged[-1] != "":
+                    merged.append("")
+                merged.extend(chunk)
+        return "\n".join(merged).strip()
+
+    @staticmethod
+    def _resume_content_bonus(selector: str, text: str) -> int:
+        normalized_selector = (selector or "").lower()
+        normalized_text = text or ""
+        bonus = 0
+        if any(token in normalized_selector for token in ("iboss-left", "resume-detail-wrap", "geek-resume-wrap", "resume-content")):
+            bonus += 12000
+        if "iboss-left" in normalized_selector:
+            bonus += 8000
+        if "dialog-wrap.active" in normalized_selector:
+            bonus += 3000
+        if normalized_selector == "main":
+            bonus -= 1500
+        if any(token in normalized_selector for token in ("card-inner", "candidate-card-wrap", "card-content")):
+            bonus -= 2000
+        if "resume-detail-wrap" in normalized_selector:
+            bonus -= 5000
+        for marker in _RESUME_POSITIVE_MARKERS:
+            if marker in normalized_text:
+                bonus += 1200
+        for marker in _RESUME_NEGATIVE_MARKERS:
+            if marker in normalized_text:
+                bonus -= 25000
+        return bonus
+
     def _dismiss_blocking_dialogs(self) -> None:
         page = self._require_page()
         close_selectors = (
@@ -931,20 +1739,86 @@ class PlaywrightBrowserRuntime:
                 """
                 () => {
                   const selectorList = [
-                    ".dialog-wrap.active .resume-detail-wrap",
-                    ".dialog-wrap.active .iboss-left",
+                    ".dialog-wrap.active",
+                    "div[role='dialog']",
+                    "div[aria-modal='true']",
+                    ".resume-detail-wrap",
                     "div.resume-detail-wrap",
                     "div.geek-resume-wrap",
                     ".iboss-left",
                     "main",
-                    "body"
+                    "body",
+                    "html"
                   ];
+                  const state = [];
+                  const seen = new Set();
+                  const capture = (el) => {
+                    if (!el || seen.has(el)) return;
+                    seen.add(el);
+                    try {
+                      const computed = window.getComputedStyle(el);
+                      const overflow = `${computed.overflow || ""} ${computed.overflowX || ""} ${computed.overflowY || ""}`;
+                      const isBodyLike = el === document.body || el === document.documentElement;
+                      const isScrollable = /auto|scroll|hidden/i.test(overflow);
+                      const isTall = el.scrollHeight > el.clientHeight + 40;
+                      const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                      const isVisible = !rect || (rect.width > 0 && rect.height > 0);
+                      if (!isVisible || (!isBodyLike && !isScrollable && !isTall)) {
+                        return;
+                      }
+                      state.push({
+                        el,
+                        scrollTop: el.scrollTop || 0,
+                        height: el.style.height || "",
+                        maxHeight: el.style.maxHeight || "",
+                        minHeight: el.style.minHeight || "",
+                        overflow: el.style.overflow || "",
+                        overflowX: el.style.overflowX || "",
+                        overflowY: el.style.overflowY || "",
+                      });
+                      el.style.height = "auto";
+                      el.style.maxHeight = "none";
+                      el.style.minHeight = "0px";
+                      el.style.overflow = "visible";
+                      el.style.overflowX = "visible";
+                      el.style.overflowY = "visible";
+                    } catch (error) {
+                      return;
+                    }
+                  };
+                  window.__hrclawResumeCaptureState = state;
+                  const roots = [];
                   for (const selector of selectorList) {
                     for (const el of document.querySelectorAll(selector)) {
-                      if (el && el.scrollHeight > el.clientHeight + 80) {
-                        el.scrollTop = el.scrollHeight;
-                      }
+                      roots.push(el);
                     }
+                  }
+                  if (!roots.length) {
+                    roots.push(document.body);
+                  }
+                  for (const root of roots) {
+                    capture(root);
+                    try {
+                      root.querySelectorAll("*").forEach((el) => capture(el));
+                    } catch (error) {
+                      // Ignore invalid roots.
+                    }
+                  }
+                  try {
+                    document.documentElement.style.height = "auto";
+                    document.documentElement.style.overflow = "visible";
+                    document.documentElement.style.overflowX = "visible";
+                    document.documentElement.style.overflowY = "visible";
+                  } catch (error) {
+                    // Ignore document root failures.
+                  }
+                  try {
+                    document.body.style.height = "auto";
+                    document.body.style.overflow = "visible";
+                    document.body.style.overflowX = "visible";
+                    document.body.style.overflowY = "visible";
+                  } catch (error) {
+                    // Ignore body failures.
                   }
                   window.scrollTo(0, document.body.scrollHeight || 0);
                 }
@@ -954,27 +1828,514 @@ class PlaywrightBrowserRuntime:
         except Exception:
             return
 
+    def _resume_detail_selectors(self, selectors: BossSelectors | None = None) -> tuple[str, ...]:
+        explicit = tuple(selectors.detail_main_text) if selectors is not None else ()
+        return tuple(
+            dict.fromkeys(
+                (
+                    ".dialog-wrap.active .iboss-left",
+                    ".dialog-wrap.active .geek-resume-wrap",
+                    ".dialog-wrap.active .resume-content",
+                    "div[data-type='boss-dialog'].active .iboss-left",
+                    "div[data-type='boss-dialog'].active .geek-resume-wrap",
+                    "div[data-type='boss-dialog'].active .resume-content",
+                    *explicit,
+                    ".iboss-left",
+                    "div.geek-resume-wrap",
+                    "div.resume-content",
+                )
+            )
+        )
+
+    def _resume_scroll_container_selectors(self) -> tuple[str, ...]:
+        return self._resume_detail_selectors()
+
+    def _capture_resume_scrollable_panel(self, *, target=None) -> bytes | None:
+        if Image is None:
+            return None
+        target = target or self._find_resume_scrollable_target()
+        if target is None:
+            return None
+        _root, locator, metrics = target
+        if metrics["client_height"] <= 0 or metrics["scroll_height"] <= 0:
+            return None
+        if metrics["scroll_height"] <= metrics["client_height"] + 40:
+            try:
+                return locator.screenshot(type="png")
+            except Exception:
+                return None
+
+        try:
+            snapshot = locator.evaluate(
+                """
+                (el) => ({
+                  scrollTop: el.scrollTop || 0,
+                  style: {
+                    height: el.style.height || "",
+                    maxHeight: el.style.maxHeight || "",
+                    minHeight: el.style.minHeight || "",
+                    overflow: el.style.overflow || "",
+                    overflowX: el.style.overflowX || "",
+                    overflowY: el.style.overflowY || "",
+                  }
+                })
+                """
+            )
+            locator.evaluate(
+                """
+                (el) => {
+                  el.style.height = `${Math.max(el.clientHeight || 0, 200)}px`;
+                  el.style.maxHeight = `${Math.max(el.clientHeight || 0, 200)}px`;
+                  el.style.minHeight = `${Math.max(el.clientHeight || 0, 200)}px`;
+                  el.style.overflow = "auto";
+                  el.style.overflowX = "hidden";
+                  el.style.overflowY = "auto";
+                }
+                """
+            )
+            page = self._require_page()
+            page.wait_for_timeout(200)
+            # First pass: scroll to bottom to trigger lazy rendering in the resume panel.
+            last_scroll_height = 0.0
+            stable_bottom_rounds = 0
+            for _ in range(18):
+                state = locator.evaluate(
+                    """
+                    (el) => ({
+                      top: el.scrollTop || 0,
+                      height: el.clientHeight || 0,
+                      scrollHeight: el.scrollHeight || 0,
+                    })
+                    """
+                )
+                client_height = max(1.0, float(state.get("height") or 0))
+                scroll_height = max(client_height, float(state.get("scrollHeight") or 0))
+                max_top = max(0.0, scroll_height - client_height)
+                locator.evaluate("(el, top) => { el.scrollTop = top; }", max_top)
+                page.wait_for_timeout(180)
+                refreshed_height = float(
+                    locator.evaluate("(el) => el.scrollHeight || 0") or 0.0
+                )
+                if refreshed_height <= last_scroll_height + 2:
+                    stable_bottom_rounds += 1
+                else:
+                    stable_bottom_rounds = 0
+                last_scroll_height = max(last_scroll_height, refreshed_height)
+                if stable_bottom_rounds >= 2:
+                    break
+
+            locator.evaluate("(el) => { el.scrollTop = 0; }")
+            page.wait_for_timeout(160)
+
+            chunks: list[tuple[Image.Image, int, int]] = []
+            ratio = 1.0
+            max_scroll_height = 0
+            max_canvas_bottom = 0
+            for _ in range(120):
+                state = locator.evaluate(
+                    """
+                    (el) => ({
+                      top: Math.max(0, Math.round(el.scrollTop || 0)),
+                      height: Math.max(1, Math.round(el.clientHeight || 1)),
+                      scrollHeight: Math.max(1, Math.round(el.scrollHeight || 1)),
+                    })
+                    """
+                )
+                top = int(state.get("top") or 0)
+                client_height = max(1, int(state.get("height") or 1))
+                scroll_height = max(client_height, int(state.get("scrollHeight") or client_height))
+                max_scroll_height = max(max_scroll_height, scroll_height)
+
+                raw = locator.screenshot(type="png")
+                image = Image.open(io.BytesIO(raw)).convert("RGBA")
+                if client_height > 0:
+                    ratio = max(ratio, image.height / float(client_height))
+                y = max(0, int(round(top * ratio)))
+                chunks.append((image, y, scroll_height))
+                max_canvas_bottom = max(max_canvas_bottom, y + image.height)
+
+                next_top = min(scroll_height - client_height, top + client_height)
+                if next_top <= top:
+                    break
+                locator.evaluate("(el, top) => { el.scrollTop = top; }", next_top)
+                page.wait_for_timeout(180)
+                moved_top = int(locator.evaluate("(el) => Math.round(el.scrollTop || 0)") or 0)
+                if moved_top <= top:
+                    break
+
+            if not chunks:
+                return None
+            canvas_width = max(image.width for image, _y, _h in chunks)
+            estimated_height = int(round(max_scroll_height * ratio)) if max_scroll_height else 0
+            canvas_height = max(estimated_height, max_canvas_bottom, 1)
+            canvas = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 255))
+            for image, y, _scroll_h in chunks:
+                canvas.paste(image, (0, y))
+            output = io.BytesIO()
+            canvas.save(output, format="PNG")
+            return output.getvalue()
+        except Exception:
+            return None
+        finally:
+            try:
+                locator.evaluate(
+                    """
+                    (el, payload) => {
+                      if (!payload) return;
+                      el.scrollTop = payload.scrollTop || 0;
+                      el.style.height = payload.style?.height || "";
+                      el.style.maxHeight = payload.style?.maxHeight || "";
+                      el.style.minHeight = payload.style?.minHeight || "";
+                      el.style.overflow = payload.style?.overflow || "";
+                      el.style.overflowX = payload.style?.overflowX || "";
+                      el.style.overflowY = payload.style?.overflowY || "";
+                    }
+                    """,
+                    snapshot if "snapshot" in locals() else None,
+                )
+            except Exception:
+                pass
+
+    def _find_resume_content_target(self, selectors: BossSelectors | None = None):
+        page = self._require_page()
+        roots = [page, *page.frames]
+        dynamic_target = self._find_dynamic_resume_target(roots)
+        if dynamic_target is not None:
+            return dynamic_target
+        best: tuple[object, object, dict[str, float]] | None = None
+        best_score = -1.0
+        for root in roots:
+            for selector in self._resume_detail_selectors(selectors):
+                locator = root.locator(selector)
+                try:
+                    count = min(locator.count(), 6)
+                except Exception:
+                    continue
+                for index in range(count):
+                    candidate = locator.nth(index)
+                    try:
+                        metrics = candidate.evaluate(
+                            """
+                            (el) => {
+                              const rect = el.getBoundingClientRect();
+                              const style = window.getComputedStyle(el);
+                            return {
+                                width: rect.width || 0,
+                                height: rect.height || 0,
+                                left: rect.left || 0,
+                                right: rect.right || 0,
+                                client_height: el.clientHeight || 0,
+                                scroll_height: el.scrollHeight || 0,
+                                overflow_y: style.overflowY || "",
+                                overflow: style.overflow || "",
+                            };
+                            }
+                            """
+                        )
+                    except Exception:
+                        continue
+                    width = float(metrics.get("width") or 0)
+                    height = float(metrics.get("height") or 0)
+                    left = float(metrics.get("left") or 0)
+                    right = float(metrics.get("right") or 0)
+                    client_height = float(metrics.get("client_height") or 0)
+                    scroll_height = float(metrics.get("scroll_height") or 0)
+                    if width < 280 or height < 120:
+                        continue
+                    try:
+                        preview_text = self._cleanup_resume_text(candidate.inner_text())[:1200]
+                    except Exception:
+                        preview_text = ""
+                    if len(preview_text) < 40:
+                        continue
+                    score = (
+                        len(preview_text) * 2
+                        + max(0.0, scroll_height - client_height)
+                        + (width * 0.2)
+                        + self._resume_content_bonus(selector, preview_text)
+                    )
+                    if "经历概览" in preview_text:
+                        score -= 45000
+                    if "最近关注" in preview_text or "期望职位" in preview_text:
+                        score += 6000
+                    if re.search(r"\d{2}岁", preview_text):
+                        score += 4000
+                    if re.search(r"(本科|硕士|博士|大专)", preview_text):
+                        score += 2500
+                    if left > self.width * 0.65:
+                        score -= 25000
+                    if right > self.width * 0.82:
+                        score -= 12000
+                    if width < 420:
+                        score -= 8000
+                    if score > best_score:
+                        best = (root, candidate, metrics)
+                        best_score = score
+        return best
+
+    def _find_dynamic_resume_target(self, roots) -> tuple[object, object, dict[str, float]] | None:
+        marker = "[data-hrclaw-resume-target='1']"
+        for root in roots:
+            try:
+                result = root.evaluate(
+                    """
+                    ({positiveMarkers, negativeMarkers}) => {
+                      document.querySelectorAll('[data-hrclaw-resume-target="1"]').forEach((el) => {
+                        el.removeAttribute('data-hrclaw-resume-target');
+                      });
+                      const dialog =
+                        document.querySelector('.dialog-wrap.active')
+                        || document.querySelector("div[data-type='boss-dialog'].active")
+                        || document.querySelector('[role="dialog"]');
+                      if (!dialog) {
+                        return null;
+                      }
+                      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1440;
+                      const dialogRect = dialog.getBoundingClientRect();
+                      const dialogLeft = dialogRect.left || 0;
+                      const dialogRight = dialogRect.right || viewportWidth;
+                      const dialogWidth = dialogRect.width || Math.max(1, dialogRight - dialogLeft);
+                      const leftBoundary = dialogLeft + Math.max(16, dialogWidth * 0.04);
+                      const rightBoundary = dialogLeft + dialogWidth * 0.54;
+                      const candidates = [...dialog.querySelectorAll('*')];
+                      let best = null;
+                      let bestScore = -Infinity;
+                      for (const el of candidates) {
+                        if (!(el instanceof HTMLElement)) continue;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width < 320 || rect.height < 120) continue;
+                        if (rect.left < dialogLeft || rect.right > dialogRight) continue;
+                        const centerX = rect.left + rect.width / 2;
+                        if (rect.left < leftBoundary - 120) continue;
+                        if (centerX > rightBoundary) continue;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) continue;
+                        const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                        if (text.length < 120) continue;
+                        let score = text.length;
+                        if (el.scrollHeight > el.clientHeight + 60) score += 20000;
+                        if (rect.width > 520) score += 6000;
+                        if (rect.height > 420) score += 3000;
+                        if (rect.width > dialogWidth * 0.7) score -= 24000;
+                        if (rect.width > dialogWidth * 0.62) score -= 16000;
+                        if (rect.left < dialogLeft + dialogWidth * 0.08) score -= 14000;
+                        if (rect.left >= leftBoundary && rect.left <= dialogLeft + dialogWidth * 0.35) score += 9000;
+                        if (centerX <= dialogLeft + dialogWidth * 0.38) score += 8000;
+                        if (rect.right <= dialogLeft + dialogWidth * 0.58) score += 6000;
+                        const classId = `${el.className || ''} ${el.id || ''}`.toLowerCase();
+                        if (classId.includes('iboss-left')) score += 18000;
+                        if (classId.includes('resume-content') || classId.includes('geek-resume-wrap')) score += 7000;
+                        if (classId.includes('resume-detail-wrap')) score -= 12000;
+                        if (classId.includes('card-inner') || classId.includes('card-content')) score -= 12000;
+                        if (classId.includes('overview') || classId.includes('summary')) score -= 12000;
+                        if (/\\b\\d{2}岁\\b/.test(text)) score += 5000;
+                        if (/(本科|硕士|博士|大专)/.test(text)) score += 3500;
+                        if (/(离职-|在职-|随时到岗|期望职位|最近关注)/.test(text)) score += 4500;
+                        for (const marker of positiveMarkers) {
+                          if (text.includes(marker)) score += 2500;
+                        }
+                        for (const marker of negativeMarkers) {
+                          if (text.includes(marker)) score -= 25000;
+                        }
+                        if (text.includes('经历概览')) score -= 45000;
+                        if (text.includes('继续沟通') || text.includes('打招呼')) score -= 12000;
+                        const dateLikeHits = (text.match(/\\d{4}[./-]\\d{1,2}\\s*[—-至]\\s*(?:\\d{4}[./-]\\d{1,2}|至今)/g) || []).length;
+                        const paragraphHits = (text.match(/[。；;]/g) || []).length;
+                        if (dateLikeHits >= 3 && paragraphHits === 0) score -= 18000;
+                        if (score > bestScore) {
+                          best = el;
+                          bestScore = score;
+                        }
+                      }
+                      if (!best) return null;
+                      best.setAttribute('data-hrclaw-resume-target', '1');
+                      const rect = best.getBoundingClientRect();
+                      const style = window.getComputedStyle(best);
+                      return {
+                        width: rect.width || 0,
+                        height: rect.height || 0,
+                        left: rect.left || 0,
+                        right: rect.right || 0,
+                        client_height: best.clientHeight || 0,
+                        scroll_height: best.scrollHeight || 0,
+                        overflow_y: style.overflowY || '',
+                        overflow: style.overflow || '',
+                      };
+                    }
+                    """,
+                    {
+                        "positiveMarkers": list(_RESUME_POSITIVE_MARKERS),
+                        "negativeMarkers": list(_RESUME_NEGATIVE_MARKERS),
+                    },
+                )
+            except Exception:
+                continue
+            if not result:
+                continue
+            try:
+                locator = root.locator(marker)
+                if locator.count() == 0:
+                    continue
+                return (root, locator.first, result)
+            except Exception:
+                continue
+        return None
+
+    def _find_resume_scrollable_target(self):
+        target = self._find_resume_content_target()
+        if target is None:
+            return None
+        _root, _locator, metrics = target
+        if float(metrics.get("scroll_height") or 0) <= float(metrics.get("client_height") or 0) + 20:
+            return None
+        return target
+
+    def _extract_resume_scrollable_content(self, *, target=None) -> dict[str, Any]:
+        target = target or self._find_resume_content_target()
+        if target is None:
+            return {"text": "", "html_fragments": []}
+        _root, locator, metrics = target
+        if metrics["client_height"] <= 0 or metrics["scroll_height"] <= 0:
+            return {"text": "", "html_fragments": []}
+        try:
+            snapshot = locator.evaluate(
+                """
+                (el) => ({
+                  scrollTop: el.scrollTop || 0,
+                  style: {
+                    height: el.style.height || "",
+                    maxHeight: el.style.maxHeight || "",
+                    minHeight: el.style.minHeight || "",
+                    overflow: el.style.overflow || "",
+                    overflowX: el.style.overflowX || "",
+                    overflowY: el.style.overflowY || "",
+                  }
+                })
+                """
+            )
+            locator.evaluate(
+                """
+                (el) => {
+                  const h = Math.max(el.clientHeight || 0, 200);
+                  el.style.height = `${h}px`;
+                  el.style.maxHeight = `${h}px`;
+                  el.style.minHeight = `${h}px`;
+                  el.style.overflow = "auto";
+                  el.style.overflowX = "hidden";
+                  el.style.overflowY = "auto";
+                }
+                """
+            )
+            page = self._require_page()
+            page.wait_for_timeout(160)
+            viewport_height = max(1, int(metrics["client_height"]))
+            scroll_height = max(viewport_height, int(metrics["scroll_height"]))
+            positions: list[int] = []
+            position = 0
+            while position < scroll_height:
+                positions.append(position)
+                position += viewport_height
+            last_position = max(0, scroll_height - viewport_height)
+            if not positions or positions[-1] != last_position:
+                positions.append(last_position)
+
+            text_variants: list[str] = []
+            html_fragments: list[str] = []
+            seen_text = set()
+            seen_html = set()
+            for position in positions:
+                locator.evaluate("(el, top) => { el.scrollTop = top; }", position)
+                page.wait_for_timeout(180)
+                try:
+                    text = self._cleanup_resume_text(locator.inner_text())
+                except Exception:
+                    text = ""
+                if text:
+                    sig = hashlib.sha1(text.encode("utf-8")).hexdigest()
+                    if sig not in seen_text:
+                        seen_text.add(sig)
+                        text_variants.append(text)
+                try:
+                    html = locator.inner_html()
+                except Exception:
+                    html = ""
+                if html:
+                    sig = hashlib.sha1(html.encode("utf-8")).hexdigest()
+                    if sig not in seen_html:
+                        seen_html.add(sig)
+                        html_fragments.append(html)
+            if not text_variants:
+                try:
+                    text_variants.append(self._cleanup_resume_text(locator.inner_text()))
+                except Exception:
+                    pass
+            if not html_fragments:
+                try:
+                    html_fragments.append(locator.inner_html())
+                except Exception:
+                    pass
+            merged_text = self._merge_markdown_blocks(text_variants) if text_variants else ""
+            merged_html = "\n".join(fragment for fragment in html_fragments if fragment)
+            return {"text": merged_text, "html_fragments": html_fragments, "html": merged_html, "selector": ""}
+        except Exception:
+            return {"text": "", "html_fragments": []}
+        finally:
+            try:
+                locator.evaluate(
+                    """
+                    (el, payload) => {
+                      if (!payload) return;
+                      el.scrollTop = payload.scrollTop || 0;
+                      el.style.height = payload.style?.height || "";
+                      el.style.maxHeight = payload.style?.maxHeight || "";
+                      el.style.minHeight = payload.style?.minHeight || "";
+                      el.style.overflow = payload.style?.overflow || "";
+                      el.style.overflowX = payload.style?.overflowX || "";
+                      el.style.overflowY = payload.style?.overflowY || "";
+                    }
+                    """,
+                    snapshot if "snapshot" in locals() else None,
+                )
+            except Exception:
+                pass
+
     def _restore_scroll_after_capture(self) -> None:
         page = self._require_page()
         try:
             page.evaluate(
                 """
                 () => {
-                  const selectorList = [
-                    ".dialog-wrap.active .resume-detail-wrap",
-                    ".dialog-wrap.active .iboss-left",
-                    "div.resume-detail-wrap",
-                    "div.geek-resume-wrap",
-                    ".iboss-left",
-                    "main",
-                    "body"
-                  ];
-                  for (const selector of selectorList) {
-                    for (const el of document.querySelectorAll(selector)) {
-                      if (el && el.scrollTop) {
-                        el.scrollTop = 0;
-                      }
+                  const state = window.__hrclawResumeCaptureState || [];
+                  for (const item of state) {
+                    if (!item || !item.el) continue;
+                    try {
+                      item.el.scrollTop = item.scrollTop || 0;
+                      item.el.style.height = item.height || "";
+                      item.el.style.maxHeight = item.maxHeight || "";
+                      item.el.style.minHeight = item.minHeight || "";
+                      item.el.style.overflow = item.overflow || "";
+                      item.el.style.overflowX = item.overflowX || "";
+                      item.el.style.overflowY = item.overflowY || "";
+                    } catch (error) {
+                      // Ignore stale detached nodes.
                     }
+                  }
+                  window.__hrclawResumeCaptureState = [];
+                  try {
+                    document.documentElement.style.height = "";
+                    document.documentElement.style.overflow = "";
+                    document.documentElement.style.overflowX = "";
+                    document.documentElement.style.overflowY = "";
+                  } catch (error) {
+                    // Ignore document root failures.
+                  }
+                  try {
+                    document.body.style.height = "";
+                    document.body.style.overflow = "";
+                    document.body.style.overflowX = "";
+                    document.body.style.overflowY = "";
+                  } catch (error) {
+                    // Ignore body failures.
                   }
                   window.scrollTo(0, 0);
                 }

@@ -72,7 +72,10 @@ class OpenAIComputerAgent:
         self.model = model or os.getenv("SCREENING_COMPUTER_MODEL", "computer-use-preview")
         self.extraction_model = extraction_model or os.getenv("SCREENING_EXTRACTION_MODEL", "kimi-for-coding")
         self.client = client
-        self.runtime = runtime or PlaywrightBrowserRuntime()
+        self.runtime = runtime or PlaywrightBrowserRuntime(
+            load_storage_state=False,
+            persist_storage_state_on_stop=False,
+        )
         self.session_id: str | None = None
         self._last_response_id: str | None = None
 

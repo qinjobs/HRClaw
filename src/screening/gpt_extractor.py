@@ -54,6 +54,42 @@ SCALAR_FIELDS = {
 }
 
 
+def summarize_model_error(detail: Any) -> str:
+    if isinstance(detail, BaseException):
+        text = str(detail)
+    elif isinstance(detail, dict):
+        try:
+            text = json.dumps(detail, ensure_ascii=False)
+        except Exception:
+            text = str(detail)
+    else:
+        text = str(detail or "")
+    normalized = text.strip()
+    lower = normalized.lower()
+    if normalized.startswith("模型提取已回退："):
+        return normalized
+    if (
+        "invalid_authentication_error" in lower
+        or "error code: 401" in lower
+        or ("api key" in lower and ("invalid" in lower or "expired" in lower))
+    ):
+        return "模型提取已回退：Kimi API Key 无效或已过期"
+    if "insufficient_quota" in lower or ("quota" in lower and "insufficient" in lower):
+        return "模型提取已回退：Kimi 额度不足"
+    if "rate_limit" in lower or "error code: 429" in lower:
+        return "模型提取已回退：Kimi 请求过多，请稍后重试"
+    if "timed out" in lower or "timeout" in lower:
+        return "模型提取已回退：Kimi 响应超时"
+    if (
+        "no json payload" in lower
+        or "valid json" in lower
+        or "json object" in lower
+        or "unsupported keys" in lower
+    ):
+        return "模型提取已回退：模型返回格式异常"
+    return "模型提取已回退：模型服务暂时不可用"
+
+
 class GPTFieldExtractor:
     def __init__(
         self,
@@ -122,9 +158,14 @@ class GPTFieldExtractor:
         self.last_usage = None
         if not self.enabled:
             return {}
-        if self.provider == "kimi_cli":
-            return self._extract_with_kimi_cli(job_id, page_text)
-        return self._extract_with_chat_completions(job_id, page_text)
+        try:
+            if self.provider == "kimi_cli":
+                return self._extract_with_kimi_cli(job_id, page_text)
+            return self._extract_with_chat_completions(job_id, page_text)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(summarize_model_error(exc)) from exc
 
     def _extract_with_chat_completions(self, job_id: str, page_text: str) -> dict[str, Any]:
         last_error: Exception | None = None
@@ -152,7 +193,7 @@ class GPTFieldExtractor:
                 if attempt >= self.max_retries:
                     break
                 time.sleep(self.retry_delay_ms / 1000)
-        raise RuntimeError(f"model extraction failed after {self.max_retries + 1} attempt(s): {last_error}") from last_error
+        raise RuntimeError(self._normalize_provider_error(last_error)) from last_error
 
     def _extract_with_kimi_cli(self, job_id: str, page_text: str) -> dict[str, Any]:
         command = self._kimi_cli_command_tokens()
@@ -192,14 +233,16 @@ class GPTFieldExtractor:
         stdout = (completed.stdout or "").strip()
         stderr = (completed.stderr or "").strip()
         if completed.returncode != 0 and not stdout:
-            raise RuntimeError(
-                f"kimi cli bridge failed (exit={completed.returncode}): {stderr or 'no stderr output'}"
-            )
+            detail = stderr or "no stderr output"
+            raise RuntimeError(self._normalize_provider_error(detail))
 
         payload = self._parse_kimi_cli_payload(stdout)
         if payload is None:
             detail = stderr or stdout[:500] or "empty output"
-            raise RuntimeError(f"kimi cli bridge returned no JSON payload: {detail}")
+            raise RuntimeError(self._normalize_provider_error(detail))
+
+        if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+            raise RuntimeError(self._normalize_provider_error(payload["error"]))
 
         usage = payload.get("usage") if isinstance(payload, dict) else None
         if isinstance(usage, dict):
@@ -279,6 +322,10 @@ class GPTFieldExtractor:
         command = shlex.split(self.kimi_cli_command) if self.kimi_cli_command else []
         command.extend(shlex.split(self.kimi_cli_args) if self.kimi_cli_args else [])
         return command
+
+    @staticmethod
+    def _normalize_provider_error(detail: Any) -> str:
+        return summarize_model_error(detail)
 
     def _effective_kimi_cli_config(self) -> str:
         # Prefer explicit config, but normalize legacy short forms to avoid

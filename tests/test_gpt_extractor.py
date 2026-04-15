@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -153,3 +154,45 @@ class GPTExtractorTests(unittest.TestCase):
         self.assertIn("--print", calls[0]["command"])
         self.assertEqual(calls[0]["input"], None)
         self.assertEqual(extractor.last_usage["provider"], "kimi_cli")
+
+    def test_extract_candidate_with_kimi_cli_bridge_normalizes_invalid_auth_error(self):
+        def fake_cli_runner(command, **kwargs):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "",
+                    "stderr": "Error code: 401 - {'error': {'message': 'The API Key appears to be invalid or may have expired.', 'type': 'invalid_authentication_error'}}",
+                },
+            )()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_ENABLE_MODEL_EXTRACTION": "true",
+                "SCREENING_KIMI_CLI_COMMAND": "kimi",
+            },
+            clear=False,
+        ):
+            extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
+            with self.assertRaisesRegex(RuntimeError, "模型提取已回退：Kimi API Key 无效或已过期"):
+                extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")
+
+    def test_extract_candidate_with_kimi_cli_bridge_normalizes_timeout_error(self):
+        def fake_cli_runner(command, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=command, timeout=180)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_ENABLE_MODEL_EXTRACTION": "true",
+                "SCREENING_KIMI_CLI_COMMAND": "kimi",
+            },
+            clear=False,
+        ):
+            extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
+            with self.assertRaisesRegex(RuntimeError, "模型提取已回退：Kimi 响应超时"):
+                extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")

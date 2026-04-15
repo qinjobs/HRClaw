@@ -1,3 +1,1 @@
-export const MyComposition = () => {
-  return null;
-};
+export { PromoVideo, TOTAL_DURATION } from "./PromoVideo";

@@ -114,6 +114,85 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("年龄不在 25.0-35.0 岁范围内", score.hard_filter_fail_reasons)
         self.assertEqual(score.decision, CandidateDecision.REJECT)
 
+    def test_custom_jd_scorecard_missing_age_is_review_signal_not_hard_reject(self):
+        custom_target = {
+            "kind": "custom_phase2",
+            "scorecard": {
+                "name": "AI应用开发工程师",
+                "filters": {"age_min": 22, "age_max": 35},
+                "weights": {
+                    "must_have": 42,
+                    "nice_to_have": 12,
+                    "title_match": 12,
+                    "industry_match": 8,
+                    "experience": 14,
+                    "education": 7,
+                    "location": 5,
+                },
+                "thresholds": {"recommend_min": 60, "review_min": 40},
+                "hard_filters": {"enforce_age": True, "must_have_ratio_min": 0.0},
+                "must_have": ["JAVA", "AI"],
+                "nice_to_have": [],
+                "exclude": [],
+                "titles": ["AI应用开发工程师"],
+                "industry": ["AI"],
+            },
+        }
+        with mock.patch("src.screening.scoring.get_scoring_target", return_value=custom_target):
+            score = score_candidate(
+                "phase2_custom_age_missing",
+                {
+                    "name": "张三",
+                    "years_experience": 6,
+                    "education_level": "本科",
+                    "current_title": "AI应用开发工程师",
+                    "raw_summary": "6年JAVA开发经验，做过AI应用开发和智能体落地。",
+                },
+            )
+
+        self.assertTrue(score.hard_filter_pass)
+        self.assertIn("年龄信息缺失，建议人工复核。", score.review_reasons)
+        self.assertIn(score.decision, {CandidateDecision.RECOMMEND, CandidateDecision.REVIEW})
+
+    def test_custom_jd_scorecard_ignores_gender_based_exclude_terms(self):
+        custom_target = {
+            "kind": "custom_phase2",
+            "scorecard": {
+                "name": "AI应用开发工程师",
+                "filters": {},
+                "weights": {
+                    "must_have": 42,
+                    "nice_to_have": 12,
+                    "title_match": 12,
+                    "industry_match": 8,
+                    "experience": 14,
+                    "education": 7,
+                    "location": 5,
+                },
+                "thresholds": {"recommend_min": 60, "review_min": 40},
+                "hard_filters": {"strict_exclude": True, "must_have_ratio_min": 0.0},
+                "must_have": ["JAVA"],
+                "nice_to_have": [],
+                "exclude": ["女"],
+                "titles": ["AI应用开发工程师"],
+                "industry": [],
+            },
+        }
+        with mock.patch("src.screening.scoring.get_scoring_target", return_value=custom_target):
+            score = score_candidate(
+                "phase2_custom_gender_exclude",
+                {
+                    "name": "李四",
+                    "years_experience": 6,
+                    "education_level": "本科",
+                    "current_title": "AI应用开发工程师",
+                    "raw_summary": "女，6年JAVA开发经验。",
+                },
+            )
+
+        self.assertTrue(score.hard_filter_pass)
+        self.assertNotIn("命中排除项", " ".join(score.hard_filter_fail_reasons))
+
     def test_caption_gender_bonus_forces_review(self):
         score = score_candidate(
             "caption_aesthetic_qc_v1",

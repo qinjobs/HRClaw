@@ -48,7 +48,7 @@ export function LoginPage() {
           <CardContent className="grid gap-4 p-8 md:grid-cols-3">
             {[
               ["试点中心", "1 个岗位、1 个 HR、20-50 份简历的起点"],
-              ["任务执行", "推荐流程与 BOSS 会话校验统一调度"],
+              ["任务执行", "推荐流程与浏览器当前页采集统一调度"],
               ["JD评分卡", "JD 评分卡生成与 Word/PDF 批量筛查"],
             ].map(([title, detail]) => (
               <div key={title} className="rounded-[12px] bg-white/[0.06] p-4">

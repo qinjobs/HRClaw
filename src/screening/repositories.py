@@ -5,7 +5,35 @@ import re
 import uuid
 
 from .db import connect, dumps, loads
+from .gpt_extractor import summarize_model_error
 from .jd_scorecard_repositories import get_jd_scorecard
+
+
+def _archive_snapshot_fields(evidence_map: dict | None) -> dict[str, object | None]:
+    evidence_map = evidence_map or {}
+    full_screenshot_error = evidence_map.get("resume_full_screenshot_error") or evidence_map.get("screenshot_error")
+    markdown_error = evidence_map.get("resume_markdown_error")
+    return {
+        "resume_full_screenshot_path": evidence_map.get("resume_full_screenshot_path"),
+        "resume_full_screenshot_error": _summarize_capture_error(full_screenshot_error) if full_screenshot_error else None,
+        "resume_full_screenshot_fallback_used": bool(evidence_map.get("resume_full_screenshot_fallback_used")),
+        "resume_markdown_path": evidence_map.get("resume_markdown_path"),
+        "resume_markdown_filename": evidence_map.get("resume_markdown_filename"),
+        "resume_markdown_error": _summarize_capture_error(markdown_error) if markdown_error else None,
+    }
+
+
+def _summarize_capture_error(detail: object) -> str:
+    if isinstance(detail, BaseException):
+        text = str(detail)
+    else:
+        text = str(detail or "")
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return "已发生截图或归档错误"
+    if len(normalized) > 220:
+        return f"{normalized[:217]}..."
+    return normalized
 
 
 def list_jobs() -> list[dict]:
@@ -649,6 +677,7 @@ def list_hr_workbench_items(
         tags = []
         if row["tags_text"]:
             tags = [tag for tag in str(row["tags_text"]).split("||") if tag]
+        archive_fields = _archive_snapshot_fields(evidence_map)
         item = {
             "candidate_id": row["candidate_id"],
             "task_id": row["task_id"],
@@ -682,9 +711,12 @@ def list_hr_workbench_items(
             "greet_detail": loads(row["greet_detail"]) if row["greet_detail"] else None,
             "greet_created_at": row["greet_created_at"],
             "screenshot_path": row["screenshot_path"],
+            **archive_fields,
             "extracted_text": row["extracted_text"],
             "gpt_extraction_used": evidence_map.get("gpt_extraction_used"),
-            "gpt_extraction_error": evidence_map.get("gpt_extraction_error"),
+            "gpt_extraction_error": summarize_model_error(evidence_map.get("gpt_extraction_error"))
+            if evidence_map.get("gpt_extraction_error")
+            else None,
             "pipeline_state": _normalize_pipeline_state_row(
                 {
                     "candidate_id": row["candidate_id"],
@@ -783,6 +815,34 @@ def list_hr_checklist_items(
     date_to: str | None = None,
     limit: int = 300,
 ) -> list[dict]:
+    scorecard_cache: dict[str, dict[str, str | None]] = {}
+
+    def enrich_search_config(search_config: dict | None, *, row_job_id: str | None, row_job_name: str | None) -> dict:
+        normalized = dict(search_config or {})
+        keyword = str(normalized.get("keyword") or "").strip()
+        city = str(normalized.get("city") or "").strip()
+        cache_key = str(row_job_id or "").strip()
+        if cache_key not in scorecard_cache:
+            scorecard_row = get_jd_scorecard(cache_key) if cache_key else None
+            scorecard = scorecard_row.get("scorecard") if isinstance(scorecard_row, dict) else {}
+            filters = scorecard.get("filters") if isinstance(scorecard, dict) else {}
+            scorecard_cache[cache_key] = {
+                "keyword": str(
+                    (scorecard_row or {}).get("name")
+                    or (scorecard or {}).get("role_title")
+                    or row_job_name
+                    or ""
+                ).strip()
+                or None,
+                "city": str((filters or {}).get("location") or "").strip() or None,
+            }
+        defaults = scorecard_cache.get(cache_key, {})
+        if not keyword and defaults.get("keyword"):
+            normalized["keyword"] = defaults["keyword"]
+        if not city and defaults.get("city"):
+            normalized["city"] = defaults["city"]
+        return normalized
+
     with connect() as conn:
         rows = conn.execute(
             """
@@ -875,6 +935,7 @@ def list_hr_checklist_items(
             evidence_map = loads(row["evidence_map"]) if row["evidence_map"] else {}
             search_config = loads(row["task_search_config"]) if row["task_search_config"] else {}
             task_token_usage = loads(row["task_token_usage"]) if row["task_token_usage"] else {}
+            archive_fields = _archive_snapshot_fields(evidence_map)
             item = {
                 "candidate_id": row["candidate_id"],
                 "task_id": row["task_id"],
@@ -884,7 +945,11 @@ def list_hr_checklist_items(
                 "task_created_at": row["task_created_at"],
                 "task_started_at": row["task_started_at"],
                 "task_finished_at": row["task_finished_at"],
-                "search_config": search_config or {},
+                "search_config": enrich_search_config(
+                    search_config,
+                    row_job_id=row["job_id"],
+                    row_job_name=row["job_name"],
+                ),
                 "task_token_usage": task_token_usage or {},
                 "external_id": row["external_id"],
                 "name": row["name"],
@@ -907,8 +972,11 @@ def list_hr_checklist_items(
                 "greet_detail": loads(row["greet_detail"]) if row["greet_detail"] else None,
                 "greet_created_at": row["greet_created_at"],
                 "screenshot_path": row["screenshot_path"],
+                **archive_fields,
                 "gpt_extraction_used": evidence_map.get("gpt_extraction_used"),
-                "gpt_extraction_error": evidence_map.get("gpt_extraction_error"),
+                "gpt_extraction_error": summarize_model_error(evidence_map.get("gpt_extraction_error"))
+                if evidence_map.get("gpt_extraction_error")
+                else None,
             }
             items.append(item)
         return items
@@ -1383,6 +1451,10 @@ def get_candidate(candidate_id: str) -> dict | None:
             "select * from candidate_actions where candidate_id = ? order by created_at asc",
             (candidate_id,),
         ).fetchall()
+        snapshot = None
+        if snapshot_row:
+            evidence_map = loads(snapshot_row["evidence_map"])
+            snapshot = {**dict(snapshot_row), "evidence_map": evidence_map, **_archive_snapshot_fields(evidence_map)}
         return {
             "candidate": candidate,
             "score": None
@@ -1393,9 +1465,7 @@ def get_candidate(candidate_id: str) -> dict | None:
                 "dimension_scores": loads(score_row["dimension_scores"]),
                 "review_reasons": loads(score_row["review_reasons"]),
             },
-            "snapshot": None
-            if not snapshot_row
-            else {**dict(snapshot_row), "evidence_map": loads(snapshot_row["evidence_map"])},
+            "snapshot": snapshot,
             "reviews": [dict(row) for row in review_rows],
             "actions": [{**dict(row), "detail": loads(row["detail"])} for row in action_rows],
         }

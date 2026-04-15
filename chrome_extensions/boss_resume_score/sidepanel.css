@@ -76,6 +76,30 @@ body {
   gap: 12px;
 }
 
+.statusCompact {
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+.statusCompact .statusRow {
+  gap: 3px;
+}
+
+.statusCompact .label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.statusCompact .status,
+.statusCompact .value {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.statusCompact .mono {
+  font-size: 11px;
+}
+
 .field,
 .toggle {
   display: grid;

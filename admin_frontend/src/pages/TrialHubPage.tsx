@@ -106,8 +106,8 @@ export function TrialHubPage() {
     },
     {
       step: "03",
-      title: "需要时再装插件",
-      body: "Chrome 插件只负责浏览器采集层，不改变后台评分逻辑。",
+      title: "再开插件采集",
+      body: "Chrome 插件只负责浏览器采集层，直接在已登录的 BOSS 页面里读取当前候选人信息。",
     },
     {
       step: "04",
@@ -121,12 +121,12 @@ export function TrialHubPage() {
       username={bootstrap.username}
       userRole={bootstrap.userRole}
       title="试点中心"
-      subtitle="把 JD 评分卡、PDF 简历导入和 Chrome 浏览器采集收拢在一页。建议先用 1 个岗位、1 个 HR、20 到 50 份历史简历跑通闭环。"
+      subtitle="把 JD 评分卡、PDF 简历导入和 Chrome 浏览器采集收拢在一页。建议先用 1 个岗位、1 个 HR、20 到 50 份历史简历跑通闭环，浏览器采集直接基于手动登录后的当前页面。"
     >
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatTile label="试点路径" value="2 条" hint="手工导入 / 浏览器采集" />
+        <StatTile label="试点路径" value="2 条" hint="手工导入 / 当前页采集" />
         <StatTile label="主入口" value="JD评分卡" hint="先定标准，再做简历打分" />
-        <StatTile label="插件层" value="Chrome" hint="BOSS 页面详情页快照入库" />
+        <StatTile label="插件层" value="Chrome" hint="已登录页面的详情页快照入库" />
         <StatTile label="建议规模" value="1 岗位" hint="20-50 份历史简历" />
       </section>
 
@@ -167,8 +167,8 @@ export function TrialHubPage() {
                 <LaunchCard
                   icon={PlayCircle}
                   title="任务执行"
-                  description="检查 BOSS 会话、执行推荐采集，并把结果回写到清单。"
-                  actionLabel="检查插件会话"
+                  description="在已登录的浏览器里直接采集候选人页面，并把结果回写到清单。"
+                  actionLabel="打开任务执行"
                   href="/hr/tasks"
                   badge="浏览器采集层"
                 />
@@ -255,7 +255,7 @@ export function TrialHubPage() {
           <Card>
             <CardHeader>
               <CardTitle>Chrome 插件采集层</CardTitle>
-              <CardDescription>插件负责浏览器侧快照和同步，不改变后台评分逻辑。</CardDescription>
+              <CardDescription>插件负责浏览器侧快照和当前页采集，不再依赖会话同步，不改变后台评分逻辑。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-[15px] leading-[1.47] text-black/68">
               <div className="rounded-[12px] bg-[#f5f5f7] p-4">
@@ -263,16 +263,16 @@ export function TrialHubPage() {
                 <p className="mt-1">把 `chrome_extensions/boss_resume_score` 当作浏览器采集层安装到 Chrome。</p>
               </div>
               <div className="rounded-[12px] bg-[#f5f5f7] p-4">
-                <div className="font-medium text-slate-950">2. 打开候选人详情</div>
-                <p className="mt-1">在 BOSS 的候选人详情页刷新一次，让插件完成同步和采集。</p>
+                <div className="font-medium text-slate-950">2. 手动登录 BOSS</div>
+                <p className="mt-1">在已登录的 BOSS 浏览器页里打开候选人详情，插件直接读取当前页面内容。</p>
               </div>
               <div className="rounded-[12px] bg-[#f5f5f7] p-4">
                 <div className="font-medium text-slate-950">3. 回到任务执行</div>
-                <p className="mt-1">点击“检查插件会话”，确认本地系统已经看到当前登录状态。</p>
+                <p className="mt-1">点击“打开任务执行”，直接把当前页采集进同一套评分引擎。</p>
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button asChild size="sm">
-                  <a href="/hr/tasks">检查会话</a>
+                  <a href="/hr/tasks">打开任务执行</a>
                 </Button>
                 <Button asChild size="sm" variant="secondary">
                   <a href="/hr/workbench">打开处理台</a>

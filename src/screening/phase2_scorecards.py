@@ -132,6 +132,21 @@ def _normalize_text_list(value: Any) -> list[str]:
     return _unique_texts([value])
 
 
+_UNSAFE_EXCLUDE_TERMS = {
+    "男",
+    "女",
+    "男性",
+    "女性",
+    "male",
+    "female",
+}
+
+
+def _sanitize_exclude_terms(value: Any) -> list[str]:
+    terms = _normalize_text_list(value)
+    return [term for term in terms if str(term).strip().lower() not in _UNSAFE_EXCLUDE_TERMS]
+
+
 def generate_scorecard_from_jd(jd_text: str, *, name: str | None = None) -> dict[str, Any]:
     raw_text = str(jd_text or "").strip()
     if not raw_text:
@@ -218,6 +233,7 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
         age_max = _coerce_number(payload.get("age_max"))
     if age_min is not None and age_max is not None and age_min > age_max:
         age_min, age_max = age_max, age_min
+    normalized_exclude = _sanitize_exclude_terms(payload.get("exclude"))
     normalized = {
         "schema_version": "phase2_scorecard_v1",
         "name": name,
@@ -233,7 +249,7 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "must_have": _normalize_text_list(payload.get("must_have")),
         "nice_to_have": _normalize_text_list(payload.get("nice_to_have")),
-        "exclude": _normalize_text_list(payload.get("exclude")),
+        "exclude": normalized_exclude,
         "titles": _normalize_text_list(payload.get("titles")),
         "industry": _normalize_text_list(payload.get("industry")),
         "weights": {
@@ -254,7 +270,7 @@ def normalize_phase2_scorecard(payload: dict[str, Any]) -> dict[str, Any]:
             "enforce_age": bool(hard_filters.get("enforce_age", False)),
             "enforce_education": bool(hard_filters.get("enforce_education", False)),
             "enforce_location": bool(hard_filters.get("enforce_location", False)),
-            "strict_exclude": bool(hard_filters.get("strict_exclude", False)),
+            "strict_exclude": bool(hard_filters.get("strict_exclude", False)) and bool(normalized_exclude),
             "must_have_ratio_min": max(0.0, min(float(hard_filters.get("must_have_ratio_min") or 0.0), 1.0)),
         },
     }
@@ -265,10 +281,29 @@ def _contains_term(haystack: str, term: str) -> bool:
     if not term:
         return False
     lowered = haystack.lower()
-    for candidate in _unique_texts(SKILL_SYNONYMS.get(term.lower(), []) + [term]):
+    for candidate in _term_variants(term):
         if candidate.lower() in lowered:
             return True
     return False
+
+
+def _term_variants(term: str) -> list[str]:
+    raw = str(term or "").strip()
+    if not raw:
+        return []
+    variants = [raw]
+    without_brackets = re.sub(r"[（(][^）)]*[）)]", "", raw).strip()
+    if without_brackets and without_brackets != raw:
+        variants.append(without_brackets)
+    stripped_suffix = re.sub(
+        r"(?:相关)?(?:实战经验|项目经验|开发经验|工作经验|经验|背景|方向|工程师|岗位|职位)$",
+        "",
+        without_brackets or raw,
+        flags=re.IGNORECASE,
+    ).strip(" -_/|")
+    if len(stripped_suffix) >= 2 and stripped_suffix not in variants:
+        variants.append(stripped_suffix)
+    return _unique_texts(SKILL_SYNONYMS.get(raw.lower(), []) + variants)
 
 
 def _fraction(numerator: int, denominator: int) -> float:
@@ -326,13 +361,16 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
     title_ratio = _fraction(len(matched_titles), len(titles))
     industry_ratio = _fraction(len(matched_industry), len(industries))
 
+    soft_review_reasons: list[str] = []
+
     if filters.get("years_min") is None:
         experience_level = 1.0
     elif years is None:
-        experience_level = 0.0
+        experience_level = 0.35
+        soft_review_reasons.append("工作年限信息缺失，建议人工复核。")
     elif years >= float(filters["years_min"]):
         gap = years - float(filters["years_min"])
-        experience_level = min(1.0, 0.75 + min(gap, 3.0) * 0.08)
+        experience_level = min(1.0, 1.0 if gap <= 0 else 0.9 + min(gap, 2.0) * 0.05)
     else:
         experience_level = max(0.0, min(years / max(float(filters["years_min"]), 1.0), 1.0) * 0.7)
 
@@ -342,7 +380,10 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
     else:
         expected_rank = _education_rank(expected_education)
         actual_rank = _education_rank(education)
-        if actual_rank >= expected_rank:
+        if not education.strip():
+            education_level = 0.35
+            soft_review_reasons.append("学历信息缺失，建议人工复核。")
+        elif actual_rank >= expected_rank:
             education_level = 1.0
         elif actual_rank + 1 == expected_rank:
             education_level = 0.45
@@ -352,18 +393,21 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
     expected_location = str(filters.get("location") or "").strip()
     if not expected_location:
         location_level = 1.0
+    elif not location.strip():
+        location_level = 0.35
+        soft_review_reasons.append("地点信息缺失，建议人工复核。")
     else:
         location_level = 1.0 if expected_location.lower() in location.lower() else 0.0
 
     hard_filter_fail_reasons: list[str] = []
     if hard_filters.get("enforce_years") and filters.get("years_min") is not None:
-        if years is None or years < float(filters["years_min"]):
+        if years is not None and years < float(filters["years_min"]):
             hard_filter_fail_reasons.append(f"工作年限低于 {filters['years_min']} 年")
     expected_age_min = filters.get("age_min")
     expected_age_max = filters.get("age_max")
     if hard_filters.get("enforce_age") and (expected_age_min is not None or expected_age_max is not None):
         if age is None:
-            hard_filter_fail_reasons.append("年龄信息缺失")
+            soft_review_reasons.append("年龄信息缺失，建议人工复核。")
         elif expected_age_min is not None and expected_age_max is not None and not (
             float(expected_age_min) <= age <= float(expected_age_max)
         ):
@@ -373,16 +417,21 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
         elif expected_age_max is not None and age > float(expected_age_max):
             hard_filter_fail_reasons.append(f"年龄高于 {expected_age_max} 岁")
     if hard_filters.get("enforce_education") and expected_education:
-        if _education_rank(education) < _education_rank(expected_education):
+        if education.strip() and _education_rank(education) < _education_rank(expected_education):
             hard_filter_fail_reasons.append(f"学历低于 {expected_education}")
     if hard_filters.get("enforce_location") and expected_location:
-        if expected_location.lower() not in location.lower():
+        if location.strip() and expected_location.lower() not in location.lower():
             hard_filter_fail_reasons.append(f"地点不符合：需要 {expected_location}")
     must_have_ratio_min = float(hard_filters.get("must_have_ratio_min") or 0.0)
     if must_have and must_have_ratio < must_have_ratio_min:
-        hard_filter_fail_reasons.append(
-            f"核心技能命中率不足 {int(must_have_ratio_min * 100)}%"
-        )
+        if not matched_must:
+            hard_filter_fail_reasons.append(
+                f"核心技能命中率不足 {int(must_have_ratio_min * 100)}%"
+            )
+        else:
+            soft_review_reasons.append(
+                f"核心技能命中率低于 {int(must_have_ratio_min * 100)}%，建议人工复核。"
+            )
     if hard_filters.get("strict_exclude") and blocked_terms:
         hard_filter_fail_reasons.append(f"命中排除项：{' / '.join(blocked_terms[:3])}")
 
@@ -411,7 +460,7 @@ def score_phase2_resume(scorecard: dict[str, Any], profile: dict[str, Any]) -> d
     else:
         decision = "reject"
 
-    review_reasons: list[str] = []
+    review_reasons: list[str] = list(dict.fromkeys(soft_review_reasons))
     if decision == "review":
         if must_have and must_have_ratio < 0.8:
             review_reasons.append("核心技能只命中部分，建议人工复核。")

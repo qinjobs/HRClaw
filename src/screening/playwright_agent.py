@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from .boss_selectors import BossSelectors, load_boss_selectors
@@ -19,8 +20,10 @@ from .candidate_heuristics import (
 )
 from .config import load_local_env
 from .gpt_extractor import GPTFieldExtractor
+from .jd_scorecard_repositories import get_jd_scorecard
 from .models import CandidateExtract
 from .repositories import list_seen_candidate_external_ids
+from .scorecards import SCORECARDS
 from .scoring import score_candidate
 
 
@@ -46,7 +49,10 @@ class PlaywrightLocalAgent:
         existing_candidate_checker=None,
     ) -> None:
         load_local_env()
-        self.runtime = runtime or PlaywrightBrowserRuntime()
+        self.runtime = runtime or PlaywrightBrowserRuntime(
+            load_storage_state=False,
+            persist_storage_state_on_stop=False,
+        )
         self.selectors = selectors or load_boss_selectors()
         self.extractor = extractor or GPTFieldExtractor()
         self.existing_candidate_checker = existing_candidate_checker or list_seen_candidate_external_ids
@@ -76,17 +82,19 @@ class PlaywrightLocalAgent:
             raise RuntimeError("Browser session is not started. Call start_session() first.")
 
         normalized_mode = (search_mode or "").strip().lower()
+        effective_search_config = dict(search_config or {})
         if normalized_mode in {"recommend", "recommend_flow", "recommendation"}:
+            effective_search_config.setdefault("skip_existing_candidates", True)
             return self._collect_recommend_candidates(
                 job_id,
                 max_candidates=max_candidates,
                 max_pages=max_pages,
-                search_config=search_config or {},
+                search_config=effective_search_config,
             )
         return self._collect_search_candidates(
             job_id,
             max_candidates=max_candidates,
-            search_config=search_config or {},
+            search_config=effective_search_config,
             sort_by=sort_by,
             max_pages=max_pages,
         )
@@ -139,7 +147,6 @@ class PlaywrightLocalAgent:
             self.runtime.open_candidate_card(card, self.selectors)
             detail = self.runtime.extract_detail_payload(self.selectors)
             screenshot_base64, screenshot_base64_error = self._safe_screenshot_base64()
-            screenshot_path, screenshot_error = self._safe_persist_screenshot(f"{job_id}_candidate_{index}")
             merged_text = "\n".join(
                 part for part in (card.get("summary_text"), detail.get("page_text")) if part
             )
@@ -148,12 +155,30 @@ class PlaywrightLocalAgent:
             extracted: dict[str, Any] = {}
             extraction_usage: dict[str, Any] | None = None
             try:
-                extracted = self.extractor.extract_candidate(job_id, detail.get("page_text") or merged_text, screenshot_base64)
-                extraction_usage = getattr(self.extractor, "last_usage", None)
+                    extracted = self.extractor.extract_candidate(job_id, detail.get("page_text") or merged_text, screenshot_base64)
+                    extraction_usage = getattr(self.extractor, "last_usage", None)
             except Exception as exc:
                 extraction_error = str(exc)
                 extraction_usage = getattr(self.extractor, "last_usage", None)
             item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
+            resume_artifacts = self._safe_persist_resume_artifacts(
+                card.get("external_id") or f"{job_id}_candidate_{index}",
+                detail.get("page_text") or merged_text,
+                title=item.get("current_title") or card.get("current_title") or card.get("name"),
+                source_url=detail.get("detail_url") or card.get("detail_url"),
+                label=f"{job_id}_candidate_{index}",
+                content_html=detail.get("content_html"),
+                page_html=detail.get("page_html"),
+            )
+            normalized_fields = self._build_score_fields(
+                item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
+                item=item,
+                card=card,
+                detail=detail,
+                merged_text=merged_text,
+                years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
+                education_level=item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
+            )
             candidates.append(
                 CandidateExtract(
                     external_id=card.get("external_id")
@@ -169,7 +194,7 @@ class PlaywrightLocalAgent:
                     location=item.get("location") or card.get("location"),
                     last_active_time=item.get("last_active_time") or card.get("last_active_time"),
                     raw_summary=item.get("resume_summary") or detail.get("page_text") or card.get("summary_text"),
-                    normalized_fields=item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
+                    normalized_fields=normalized_fields,
                     evidence_map={
                         "list_summary": card.get("summary_text"),
                         "list_url": card.get("detail_url"),
@@ -181,13 +206,14 @@ class PlaywrightLocalAgent:
                         "model_name": getattr(self.extractor, "model", None),
                         "model_usage": extraction_usage,
                         **({"gpt_extraction_error": extraction_error} if extraction_error else {}),
-                        **({"screenshot_error": screenshot_error} if screenshot_error else {}),
+                        **({"screenshot_error": resume_artifacts.get("screenshot_error")} if resume_artifacts.get("screenshot_error") else {}),
                         **({"screenshot_base64_error": screenshot_base64_error} if screenshot_base64_error else {}),
+                        **resume_artifacts,
                         "page_index": card.get("page_index"),
                         "applied_filters": applied_filters,
                         **item.get("evidence_map", {}),
                     },
-                    screenshot_path=screenshot_path or "",
+                    screenshot_path=str(resume_artifacts.get("resume_full_screenshot_path") or resume_artifacts.get("screenshot_path") or ""),
                 )
             )
 
@@ -211,7 +237,10 @@ class PlaywrightLocalAgent:
                 raise RuntimeError("Recommend page did not load. Check login state or recommend selectors.")
 
         auto_greet_enabled = self._is_truthy_env("SCREENING_AUTO_GREET_ENABLED", default=True)
-        auto_greet_threshold = self._float_env("SCREENING_AUTO_GREET_THRESHOLD", default=90.0)
+        auto_greet_threshold, auto_greet_threshold_source = self._resolve_auto_greet_threshold(
+            job_id,
+            search_config,
+        )
         auto_greet_max = self._int_env("SCREENING_AUTO_GREET_MAX_PER_TASK", default=max_candidates)
         auto_greet_allow_non_recommend = self._is_truthy_env(
             "SCREENING_AUTO_GREET_ALLOW_NON_RECOMMEND",
@@ -277,7 +306,6 @@ class PlaywrightLocalAgent:
                         external_id=target_card.get("external_id") or f"candidate-{candidate_index}",
                     )
                     screenshot_base64, screenshot_base64_error = self._safe_screenshot_base64()
-                    screenshot_path, screenshot_error = self._safe_persist_screenshot(f"{job_id}_candidate_{candidate_index}")
                     merged_text = "\n".join(
                         part for part in (target_card.get("summary_text"), detail.get("page_text")) if part
                     )
@@ -302,19 +330,33 @@ class PlaywrightLocalAgent:
                         extraction_error = str(exc)
                         extraction_usage = getattr(self.extractor, "last_usage", None)
                     item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
-                    normalized_fields = item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item)
+                    resume_artifacts = self._safe_persist_resume_artifacts(
+                        target_card.get("external_id") or f"candidate-{candidate_index}",
+                        detail.get("page_text") or merged_text,
+                        title=item.get("current_title") or target_card.get("current_title") or target_card.get("name"),
+                        source_url=detail.get("detail_url") or target_card.get("detail_url"),
+                        label=f"{job_id}_candidate_{candidate_index}",
+                        content_html=detail.get("content_html"),
+                        page_html=detail.get("page_html"),
+                    )
                     years_experience = target_card.get("years_experience") or extract_years_experience(merged_text)
                     if item.get("years_experience"):
                         years_experience = item.get("years_experience")
                     education_level = target_card.get("education_level") or extract_education_level(merged_text)
                     if item.get("education_level"):
                         education_level = item.get("education_level")
+                    normalized_fields = self._build_score_fields(
+                        item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
+                        item=item,
+                        card=target_card,
+                        detail=detail,
+                        merged_text=merged_text,
+                        years_experience=years_experience,
+                        education_level=education_level,
+                    )
                     pre_score = score_candidate(
                         job_id,
-                        normalized_fields | {
-                            "years_experience": years_experience,
-                            "education_level": education_level,
-                        },
+                        normalized_fields,
                     )
                     greet_info = self._try_auto_greet(
                         total_score=pre_score.total_score,
@@ -350,8 +392,9 @@ class PlaywrightLocalAgent:
                             "model_name": getattr(self.extractor, "model", None),
                             "model_usage": extraction_usage,
                             **({"gpt_extraction_error": extraction_error} if extraction_error else {}),
-                            **({"screenshot_error": screenshot_error} if screenshot_error else {}),
+                            **({"screenshot_error": resume_artifacts.get("screenshot_error")} if resume_artifacts.get("screenshot_error") else {}),
                             **({"screenshot_base64_error": screenshot_base64_error} if screenshot_base64_error else {}),
+                            **resume_artifacts,
                             "resume_downloaded": download_result.get("downloaded", False),
                             "resume_path": download_result.get("resume_path"),
                             "resume_download_reason": download_result.get("reason"),
@@ -360,13 +403,14 @@ class PlaywrightLocalAgent:
                             "resume_fallback_export_error": download_result.get("fallback_export_error"),
                             "auto_greet_enabled": auto_greet_enabled,
                             "auto_greet_threshold": auto_greet_threshold,
+                            "auto_greet_threshold_source": auto_greet_threshold_source,
                             "auto_greet_allow_non_recommend": auto_greet_allow_non_recommend,
                             "auto_greet_score": pre_score.total_score,
                             **greet_info,
                             "page_index": target_card.get("page_index"),
                             **item.get("evidence_map", {}),
                         },
-                        screenshot_path=screenshot_path or "",
+                        screenshot_path=str(resume_artifacts.get("resume_full_screenshot_path") or resume_artifacts.get("screenshot_path") or ""),
                     )
                     candidates.append(current_candidate)
                     page_processed += 1
@@ -425,6 +469,73 @@ class PlaywrightLocalAgent:
             return
         time.sleep(delay)
 
+    @staticmethod
+    def _coerce_text_list(*values: Any) -> list[str]:
+        items: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if isinstance(value, (list, tuple, set)):
+                raw_items = value
+            elif value in (None, ""):
+                raw_items = []
+            else:
+                raw_items = [value]
+            for raw_item in raw_items:
+                text = str(raw_item or "").strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                items.append(text)
+        return items
+
+    def _build_score_fields(
+        self,
+        normalized_fields: dict[str, Any],
+        *,
+        item: dict[str, Any],
+        card: dict[str, Any],
+        detail: dict[str, Any],
+        merged_text: str,
+        years_experience: Any,
+        education_level: Any,
+    ) -> dict[str, Any]:
+        raw_summary = item.get("resume_summary") or detail.get("page_text") or merged_text
+        return dict(normalized_fields or {}) | {
+            "name": item.get("name") or card.get("name"),
+            "age": item.get("age") or card.get("age") or extract_age(merged_text),
+            "education_level": education_level,
+            "major": item.get("major"),
+            "years_experience": years_experience,
+            "current_company": item.get("current_company") or card.get("current_company"),
+            "latest_company": item.get("current_company") or card.get("current_company"),
+            "current_title": item.get("current_title") or card.get("current_title"),
+            "latest_title": item.get("current_title") or card.get("current_title"),
+            "expected_salary": item.get("expected_salary") or extract_salary(merged_text),
+            "location": item.get("location") or card.get("location"),
+            "city": item.get("location") or card.get("location"),
+            "last_active_time": item.get("last_active_time") or card.get("last_active_time"),
+            "skills": self._coerce_text_list(
+                item.get("skills"),
+                (normalized_fields or {}).get("skills"),
+                item.get("project_keywords"),
+            ),
+            "industry_tags": self._coerce_text_list(
+                item.get("industry_tags"),
+                (normalized_fields or {}).get("industry_tags"),
+            ),
+            "project_keywords": self._coerce_text_list(
+                item.get("project_keywords"),
+                (normalized_fields or {}).get("project_keywords"),
+            ),
+            "raw_summary": raw_summary,
+            "resume_summary": raw_summary,
+            "summary": raw_summary,
+            "page_text": detail.get("page_text") or merged_text,
+        }
+
     def _handle_manual_verification(self, search_config: dict[str, Any], *, flow: str) -> None:
         checker = getattr(self.runtime, "is_manual_verification_page", None)
         if not callable(checker):
@@ -458,7 +569,7 @@ class PlaywrightLocalAgent:
             return
         wait_timeout_seconds = self._float_value(
             search_config.get("login_scan_wait_seconds"),
-            fallback=self._float_env("SCREENING_LOGIN_SCAN_WAIT_SECONDS", default=20.0),
+            fallback=self._float_env("SCREENING_LOGIN_SCAN_WAIT_SECONDS", default=15.0),
         )
         waiter = getattr(self.runtime, "wait_for_login_scan", None)
         if callable(waiter):
@@ -495,6 +606,46 @@ class PlaywrightLocalAgent:
             "auto_greet_reason": action.get("reason"),
         }
 
+    def _resolve_auto_greet_threshold(
+        self,
+        job_id: str,
+        search_config: dict[str, Any],
+    ) -> tuple[float, str]:
+        config_threshold = self._float_value(search_config.get("auto_greet_threshold"), fallback=-1.0)
+        if config_threshold >= 0:
+            return config_threshold, "search_config"
+
+        env_threshold = os.getenv("SCREENING_AUTO_GREET_THRESHOLD")
+        if env_threshold not in (None, ""):
+            return self._float_value(env_threshold, fallback=90.0), "env"
+
+        row = get_jd_scorecard(job_id)
+        if row and isinstance(row.get("scorecard"), dict):
+            threshold = self._threshold_from_scorecard(row["scorecard"])
+            if threshold is not None:
+                return threshold, "scorecard.recommend_min"
+
+        builtin_scorecard = SCORECARDS.get(job_id)
+        if isinstance(builtin_scorecard, dict):
+            threshold = self._threshold_from_scorecard(builtin_scorecard)
+            if threshold is not None:
+                return threshold, "builtin.recommend_min"
+
+        return 90.0, "default"
+
+    @staticmethod
+    def _threshold_from_scorecard(scorecard: dict[str, Any]) -> float | None:
+        thresholds = scorecard.get("thresholds")
+        if not isinstance(thresholds, dict):
+            return None
+        value = thresholds.get("recommend_min")
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _is_truthy(value: Any, *, default: bool = False) -> bool:
         if value is None:
@@ -521,6 +672,71 @@ class PlaywrightLocalAgent:
             return self.runtime.persist_screenshot(label), None
         except Exception as exc:
             return None, str(exc)
+
+    def _safe_persist_resume_full_screenshot(self, external_id: str) -> tuple[str | None, str | None]:
+        try:
+            return self.runtime.persist_resume_full_screenshot(external_id), None
+        except Exception as exc:
+            return None, str(exc)
+
+    def _safe_persist_resume_markdown(
+        self,
+        external_id: str,
+        content: str,
+        *,
+        title: str | None = None,
+        source_url: str | None = None,
+        content_html: str | None = None,
+        page_html: str | None = None,
+        screenshot_path: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        try:
+            return (
+                self.runtime.persist_resume_markdown(
+                    external_id,
+                    content,
+                    title=title,
+                    source_url=source_url,
+                    content_html=content_html,
+                    page_html=page_html,
+                    screenshot_path=screenshot_path,
+                ),
+                None,
+            )
+        except Exception as exc:
+            return None, str(exc)
+
+    def _safe_persist_resume_artifacts(
+        self,
+        external_id: str,
+        content: str,
+        *,
+        title: str | None = None,
+        source_url: str | None = None,
+        label: str | None = None,
+        content_html: str | None = None,
+        page_html: str | None = None,
+    ) -> dict[str, Any]:
+        resume_full_screenshot_path, resume_full_screenshot_error = self._safe_persist_resume_full_screenshot(external_id)
+        resume_markdown_path, resume_markdown_error = self._safe_persist_resume_markdown(
+            external_id,
+            content,
+            title=title,
+            source_url=source_url,
+            content_html=content_html,
+            page_html=page_html,
+            screenshot_path=resume_full_screenshot_path,
+        )
+        return {
+            "resume_full_screenshot_path": resume_full_screenshot_path,
+            "resume_full_screenshot_error": resume_full_screenshot_error,
+            "resume_full_screenshot_fallback_used": False,
+            "resume_markdown_path": resume_markdown_path,
+            "resume_markdown_filename": Path(resume_markdown_path).name if resume_markdown_path else None,
+            "resume_markdown_error": resume_markdown_error,
+            "screenshot_path": resume_full_screenshot_path,
+            "screenshot_error": resume_full_screenshot_error,
+        }
 
     @staticmethod
     def _is_truthy_env(name: str, *, default: bool) -> bool:

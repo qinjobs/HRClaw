@@ -98,11 +98,28 @@ class ScreeningOrchestrator:
                 add_log(task_id, "info", "candidate.extract", {"candidate_id": candidate_id, "snapshot_id": snapshot_id})
 
                 current_status = self._transition(task_id, current_status, TaskStatus.SCORING_CANDIDATE)
-                score = score_candidate(task["job_id"], candidate.normalized_fields | {
-                    "age": candidate.age,
-                    "years_experience": candidate.years_experience,
-                    "education_level": candidate.education_level,
-                })
+                score = score_candidate(
+                    task["job_id"],
+                    candidate.normalized_fields
+                    | {
+                        "name": candidate.name,
+                        "age": candidate.age,
+                        "years_experience": candidate.years_experience,
+                        "education_level": candidate.education_level,
+                        "major": candidate.major,
+                        "current_company": candidate.current_company,
+                        "latest_company": candidate.current_company,
+                        "current_title": candidate.current_title,
+                        "latest_title": candidate.current_title,
+                        "expected_salary": candidate.expected_salary,
+                        "location": candidate.location,
+                        "city": candidate.location,
+                        "last_active_time": candidate.last_active_time,
+                        "raw_summary": candidate.raw_summary,
+                        "resume_summary": candidate.raw_summary,
+                        "summary": candidate.raw_summary,
+                    },
+                )
                 insert_score(
                     candidate_id,
                     task["job_id"],

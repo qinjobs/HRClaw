@@ -290,6 +290,113 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("登录", json.loads(body)["error"])
 
+    def test_recommend_run_uses_manual_browser_capture_without_session_sync(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 10,
+                "max_pages": 2,
+                "sort_by": "active",
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "mock"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ), mock.patch.object(
+            self.api,
+            "save_boss_storage_state",
+        ) as save_mock:
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 200)
+        save_mock.assert_not_called()
+        payload = json.loads(body)
+        self.assertIn("task_id", payload)
+        self.assertIn("result", payload)
+        self.assertNotIn("session", payload)
+
+    def test_recommend_run_accepts_auto_greet_threshold_in_search_config(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 10,
+                "max_pages": 2,
+                "sort_by": "active",
+                "search_config": {"auto_greet_threshold": 82},
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "mock"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ):
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["task"]["search_config"]["auto_greet_threshold"], 82)
+        self.assertTrue(payload["task"]["search_config"]["skip_existing_candidates"])
+
+    def test_recommend_run_accepts_keyword_and_city_in_search_config(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 10,
+                "max_pages": 2,
+                "sort_by": "active",
+                "search_config": {"keyword": "AI应用开发工程师", "city": "深圳"},
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "mock"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ):
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["task"]["search_config"]["keyword"], "AI应用开发工程师")
+        self.assertEqual(payload["task"]["search_config"]["city"], "深圳")
+        self.assertTrue(payload["task"]["search_config"]["skip_existing_candidates"])
+
+    def test_recommend_run_defaults_skip_existing_candidates(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 5,
+                "max_pages": 1,
+                "sort_by": "active",
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "mock"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ):
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["task"]["search_config"]["skip_existing_candidates"])
+
     def test_boss_session_save_prompts_manual_login_when_not_detected(self):
         cookie = self._login_cookie()
         handler = self._make_handler("POST", "/api/boss/session/save", {})

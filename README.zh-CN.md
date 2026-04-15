@@ -40,7 +40,7 @@
 | 招聘后台 | 试点中心、JD 卡、批量导入、结果查看 | `admin_frontend/` + `src/screening/api.py` |
 | 批量导入链路 | PDF / DOC / DOCX 解析、OCR fallback、自动评分 | `src/screening/phase2_imports.py` |
 | 浏览器采集插件 | Chrome MV3 侧边栏采集候选人详情页 | `chrome_extensions/boss_resume_score/` |
-| 安装与发布包 | 前端静态产物、插件压缩包、Windows 安装附件 | `install/` + `release/` |
+| 安装与发布包 | 前端静态产物、插件压缩包、Windows/macOS 安装附件 | `install/` + `release/` |
 
 ## 核心工作流
 
@@ -124,8 +124,10 @@ http://127.0.0.1:8080
 
 - `install/packages/frontend/admin_frontend-dist.tgz`
 - `install/packages/windows/admin_frontend-dist.zip`
+- `install/packages/macos/.env.local.example`
 - `install/packages/chrome_extension/boss_resume_score.zip`
 - `release/HRClaw_windows_bundle.zip`
+- `release/HRClaw_macos_bundle.zip`
 
 这些包已经和当前后台页面、插件侧边栏版本同步，适合直接分发和试点。
 
