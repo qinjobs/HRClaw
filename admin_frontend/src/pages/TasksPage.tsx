@@ -67,7 +67,7 @@ export function TasksPage() {
 
   const createAndRun = async () => {
     setRunningTask(true);
-    appendLog("开始创建并执行 Recommend 任务，请先在当前 Chrome 中手动登录 BOSS，然后直接采集当前页面。");
+    appendLog("开始创建并执行 Recommend 任务：系统会检测 9222 调试 Chrome，并直接复用已登录的 BOSS 会话执行抓取、评分与自动打招呼。");
     try {
       const payload = {
         job_id: jobId,
@@ -104,11 +104,10 @@ export function TasksPage() {
     <AppShell
       username={bootstrap.username}
       userRole={bootstrap.userRole}
-      title="任务执行"
-      subtitle="执行顺序已调整为：HR 先在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面，再执行 recommend 采集、评分和结果回填。分数达到评分卡 recommend 阈值后，会自动点击打招呼。"
+      title="任务执行"      
     >
       <div className="grid gap-4 md:grid-cols-3">
-        <StatTile label="默认流程" value="Recommend" hint="手动登录 → 当前页采集 → 打分 → 清单回写" />
+        <StatTile label="默认流程" value="推荐牛人简历分析" hint="9222 检测 → 复用已登录会话 → 打分 → 清单回写" />
         <StatTile label="当前模式" value={sortBy === "active" ? "活跃优先" : "最新优先"} hint="排序只影响候选人扫描顺序" />
         <StatTile label="后台入口" value="5 个模块" hint="任务执行、推荐处理台、Checklist、搜索、JD评分卡" />
       </div>
@@ -217,7 +216,7 @@ export function TasksPage() {
               <StatusBanner
                 tone="default"
                 title="手动登录"
-                description="系统不再拉起单独的 BOSS 登录浏览器，也不再依赖保存会话。请在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面。"
+                description="请先在本机 9222 调试 Chrome 中手工登录 BOSS；点击创建任务后，系统会直接复用这个已登录会话执行推荐牛人流程。"
               />
               <StatusBanner
                 tone="default"
@@ -229,7 +228,7 @@ export function TasksPage() {
             <div className="flex flex-wrap gap-3">
               <Button onClick={createAndRun} disabled={runningTask || !jobId}>
                 <PlayCircle className="size-4" />
-                {runningTask ? "执行中..." : "创建并执行 Recommend 任务"}
+                {runningTask ? "执行中..." : "创建推荐牛人简历分析任务"}
               </Button>
             </div>
           </CardContent>

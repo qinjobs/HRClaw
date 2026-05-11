@@ -96,6 +96,7 @@ class PaddleOCRBackend:
     def __init__(self) -> None:
         self._ocr = None
         self._module = None
+        self._compat_retry_active = False
 
     @property
     def provider(self) -> str:
@@ -121,7 +122,15 @@ class PaddleOCRBackend:
 
     def extract_text(self, file_path: Path) -> str:
         ocr = self._get_ocr()
-        results = list(ocr.predict(input=str(file_path)))
+        try:
+            results = list(ocr.predict(input=str(file_path)))
+        except Exception as exc:
+            if self._should_retry_with_compat(exc):
+                self._activate_compat_retry()
+                ocr = self._get_ocr()
+                results = list(ocr.predict(input=str(file_path)))
+            else:
+                raise
         texts = self._collect_texts(results)
         if not texts:
             texts = self._collect_texts_from_saved_json(results)
@@ -133,6 +142,7 @@ class PaddleOCRBackend:
     def _load_module(self):
         if self._module is not None:
             return self._module
+        self._apply_runtime_compat_flags()
         self._module = importlib.import_module("paddleocr")
         return self._module
 
@@ -143,6 +153,11 @@ class PaddleOCRBackend:
         paddle_ocr_cls = getattr(module, "PaddleOCR", None)
         if paddle_ocr_cls is None:
             raise RuntimeError("paddleocr 模块中不存在 PaddleOCR")
+        kwargs = self._build_ocr_kwargs(compat_mode=self._compat_mode_enabled())
+        self._ocr = paddle_ocr_cls(**kwargs)
+        return self._ocr
+
+    def _build_ocr_kwargs(self, *, compat_mode: bool) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "use_doc_orientation_classify": _env_flag("SCREENING_RESUME_OCR_USE_DOC_ORIENTATION", False),
             "use_doc_unwarping": _env_flag("SCREENING_RESUME_OCR_USE_DOC_UNWARPING", False),
@@ -151,17 +166,70 @@ class PaddleOCRBackend:
         lang = str(os.getenv("SCREENING_RESUME_OCR_LANG", "ch") or "ch").strip()
         if lang:
             kwargs["lang"] = lang
-        det_model_name = str(
-            os.getenv("SCREENING_RESUME_OCR_DET_MODEL_NAME", "PP-OCRv5_mobile_det") or "PP-OCRv5_mobile_det"
-        ).strip()
-        rec_default = "en_PP-OCRv5_mobile_rec" if lang.lower() == "en" else "PP-OCRv5_mobile_rec"
-        rec_model_name = str(os.getenv("SCREENING_RESUME_OCR_REC_MODEL_NAME", rec_default) or rec_default).strip()
+        if compat_mode:
+            det_default = "PP-OCRv4_mobile_det"
+            rec_default = "en_PP-OCRv4_mobile_rec" if lang.lower() == "en" else "PP-OCRv4_mobile_rec"
+            det_model_name = str(os.getenv("SCREENING_RESUME_OCR_COMPAT_DET_MODEL_NAME", det_default) or det_default).strip()
+            rec_model_name = str(os.getenv("SCREENING_RESUME_OCR_COMPAT_REC_MODEL_NAME", rec_default) or rec_default).strip()
+            ocr_version = str(os.getenv("SCREENING_RESUME_OCR_COMPAT_OCR_VERSION", "PP-OCRv4") or "PP-OCRv4").strip()
+            if ocr_version:
+                kwargs["ocr_version"] = ocr_version
+            kwargs["use_doc_orientation_classify"] = False
+            kwargs["use_doc_unwarping"] = False
+            kwargs["use_textline_orientation"] = False
+            kwargs["enable_mkldnn"] = False
+        else:
+            det_model_name = str(
+                os.getenv("SCREENING_RESUME_OCR_DET_MODEL_NAME", "PP-OCRv5_mobile_det") or "PP-OCRv5_mobile_det"
+            ).strip()
+            rec_default = "en_PP-OCRv5_mobile_rec" if lang.lower() == "en" else "PP-OCRv5_mobile_rec"
+            rec_model_name = str(os.getenv("SCREENING_RESUME_OCR_REC_MODEL_NAME", rec_default) or rec_default).strip()
         if det_model_name:
             kwargs["text_detection_model_name"] = det_model_name
         if rec_model_name:
             kwargs["text_recognition_model_name"] = rec_model_name
-        self._ocr = paddle_ocr_cls(**kwargs)
-        return self._ocr
+        return kwargs
+
+    def _compat_mode_enabled(self) -> bool:
+        compat = str(os.getenv("SCREENING_RESUME_OCR_COMPAT_MODE", "auto") or "auto").strip().lower()
+        if compat in {"1", "true", "on", "yes", "force", "always"}:
+            return True
+        return self._compat_retry_active
+
+    def _apply_runtime_compat_flags(self) -> None:
+        is_windows = os.name == "nt"
+        disable_onednn_default = is_windows
+        disable_pir_default = is_windows
+        if _env_flag("SCREENING_RESUME_OCR_COMPAT_DISABLE_ONEDNN", disable_onednn_default):
+            os.environ.setdefault("FLAGS_use_mkldnn", "0")
+            os.environ.setdefault("FLAGS_use_onednn", "0")
+        if _env_flag("SCREENING_RESUME_OCR_COMPAT_DISABLE_PIR", disable_pir_default):
+            os.environ.setdefault("FLAGS_enable_pir_api", "0")
+        if _env_flag("SCREENING_RESUME_OCR_DISABLE_MODEL_SOURCE_CHECK", True):
+            os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+    def _is_known_runtime_compat_error(self, exc: Exception) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        markers = (
+            "convertpirattribute2runtimeattribute",
+            "onednn_instruction.cc",
+            "pir::arrayattribute",
+            "pir::doubleattribute",
+        )
+        return any(marker in message for marker in markers)
+
+    def _should_retry_with_compat(self, exc: Exception) -> bool:
+        if self._compat_retry_active:
+            return False
+        if self._compat_mode_enabled():
+            return False
+        return self._is_known_runtime_compat_error(exc)
+
+    def _activate_compat_retry(self) -> None:
+        self._compat_retry_active = True
+        self._ocr = None
 
     def _collect_texts(self, value: Any, *, depth: int = 0, key_hint: str = "") -> list[str]:
         if depth > 10 or value is None:
@@ -343,18 +411,113 @@ def shutil_which(command: str) -> str | None:
     return None
 
 
+_RESUME_NAME_HEADINGS = {
+    "基本信息",
+    "个人信息",
+    "工作经历",
+    "项目经历",
+    "教育经历",
+    "教育背景",
+    "自我评价",
+    "个人优势",
+    "技术背景",
+    "求职意向",
+    "简历正文",
+}
+
+_RESUME_NAME_STOPWORDS = (
+    "工程师",
+    "方向",
+    "应届生",
+    "基本信息",
+    "工作经历",
+    "项目经历",
+    "教育经历",
+    "技术背景",
+    "求职意向",
+    "个人简历",
+    "简历",
+    "毕业",
+    "院校",
+    "学校",
+)
+
+
+def _is_heading_like(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return compact in _RESUME_NAME_HEADINGS
+
+
+def _is_plausible_chinese_name(text: str) -> bool:
+    candidate = re.sub(r"\s+", "", str(text or ""))
+    if not re.fullmatch(r"[\u4e00-\u9fa5·]{2,8}", candidate):
+        return False
+    if _is_heading_like(candidate):
+        return False
+    if any(stopword in candidate for stopword in _RESUME_NAME_STOPWORDS):
+        return False
+    return True
+
+
+def _extract_name_from_filename(filename: str) -> str:
+    stem = Path(filename).stem
+    tokens = [token for token in re.split(r"[_\-\s]+", stem) if token]
+    for token in reversed(tokens):
+        candidate = re.sub(r"[^\u4e00-\u9fa5·]", "", token)
+        if _is_plausible_chinese_name(candidate):
+            return candidate
+    for candidate in re.findall(r"[\u4e00-\u9fa5·]{2,8}", stem):
+        if _is_plausible_chinese_name(candidate):
+            return candidate
+    return ""
+
+
+def _extract_years_from_filename(filename: str) -> float | None:
+    stem = Path(filename).stem
+    compact = re.sub(r"\s+", "", stem)
+    if re.search(r"(应届|校招|毕业生)", compact):
+        return 0.0
+    for match in re.finditer(r"(\d{1,2})\s*年(?:经验|工作经验|开发经验|测试经验)?", compact):
+        try:
+            years = float(match.group(1))
+        except ValueError:
+            continue
+        if 0 <= years <= 20:
+            return years
+    return None
+
+
+def _infer_years_experience(text: str, filename: str) -> float | None:
+    years = extract_years_experience(text)
+    if years is not None:
+        return years
+    if re.search(r"(应届|校招|毕业生)", str(text or "")):
+        return 0.0
+    return _extract_years_from_filename(filename)
+
+
 def _extract_name_from_text(text: str, filename: str) -> str:
-    explicit = re.search(r"姓名[:：]?\s*([\u4e00-\u9fa5·]{2,8})", text)
+    explicit = re.search(r"姓\s*名\s*[:：]?\s*([\u4e00-\u9fa5· \t]{2,16})", text)
     if explicit:
-        return explicit.group(1)
+        candidate = re.sub(r"\s+", "", explicit.group(1)).strip()
+        if _is_plausible_chinese_name(candidate):
+            return candidate
     english = re.search(r"(?:name|candidate)[:：]?\s*([A-Za-z][A-Za-z .'-]{1,40})", text, flags=re.IGNORECASE)
     if english:
         return english.group(1).strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in lines[:8]:
-        candidate = line.replace("简历", "").replace("个人简历", "").strip()
-        if re.fullmatch(r"[\u4e00-\u9fa5·]{2,8}", candidate):
+    for line in lines[:12]:
+        age_prefixed = re.match(r"^([\u4e00-\u9fa5·]{2,8})\s*(?:\d{1,2}\s*岁|[（(])", line)
+        if age_prefixed:
+            candidate = age_prefixed.group(1).strip()
+            if _is_plausible_chinese_name(candidate):
+                return candidate
+        candidate = re.sub(r"\s+", "", line.replace("个人简历", "").replace("简历", "").strip())
+        if _is_plausible_chinese_name(candidate):
             return candidate
+    filename_name = _extract_name_from_filename(filename)
+    if filename_name:
+        return filename_name
     stem = Path(filename).stem
     cleaned = re.sub(r"[_\-()\[\]0-9]+", " ", stem).strip()
     return cleaned or stem
@@ -444,7 +607,7 @@ def build_resume_profile_from_text(
         "source_candidate_id": source_candidate_id,
         "name": name,
         "city": _extract_location(normalized_text),
-        "years_experience": extract_years_experience(normalized_text),
+        "years_experience": _infer_years_experience(normalized_text, filename),
         "education_level": extract_education_level(normalized_text),
         "latest_title": title,
         "latest_company": company,
@@ -520,6 +683,11 @@ class ResumeImportService:
                     text=text,
                 )
                 score = score_phase2_resume(scorecard, profile)
+                matched_terms = list(score.get("matched_terms") or [])
+                if not matched_terms:
+                    matched_terms = _unique_texts(
+                        list(profile.get("skills") or []) + list(profile.get("industry_tags") or [])
+                    )[:8]
                 profile_items.append(profile)
                 profile_id = f"{profile['source']}:{profile['external_id']}"
                 detail = {
@@ -542,7 +710,7 @@ class ResumeImportService:
                         "decision": score["decision"],
                         "hard_filter_pass": score["hard_filter_pass"],
                         "hard_filter_fail_reasons": score["hard_filter_fail_reasons"],
-                        "matched_terms": score["matched_terms"],
+                        "matched_terms": matched_terms,
                         "missing_terms": score["missing_terms"],
                         "dimension_scores": score["dimension_scores"],
                         "summary": str((profile.get("raw_profile") or {}).get("summary") or "")[:280],

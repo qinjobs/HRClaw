@@ -9,16 +9,20 @@ import shutil
 import time
 from http import HTTPStatus
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .boss_auth import reset_boss_storage_state, save_boss_storage_state, sync_boss_storage_state
 from .db import init_db
 from .extension_candidates import ExtensionCandidateIngestService
 from .extension_scoring import ExtensionScoreService
+from .email_resume_ingest.service import EmailResumeIngestService
 from .hr_users import (
     create_hr_user,
     get_hr_user_by_id,
     get_hr_user_by_username,
+    list_email_ingest_users,
     list_hr_users,
     record_hr_user_login,
     reset_hr_user_password,
@@ -48,6 +52,7 @@ from .pipeline_service import CollectionPipelineService
 from .scorecards import normalize_builtin_scorecard
 from .scoring_targets import get_scoring_target, list_scoring_targets
 from .search_service import ResumeSearchService
+from .gpt_extractor import GPTFieldExtractor
 from .repositories import (
     add_review_action,
     add_candidate_tag,
@@ -133,6 +138,43 @@ def _body(status: HTTPStatus, body: bytes, content_type: str, headers: dict[str,
 
 def _html(status: HTTPStatus, html: str) -> tuple[int, bytes, str]:
     return _body(status, html.encode("utf-8"), "text/html; charset=utf-8")
+
+
+def _search_profile_resume_text(profile: dict) -> str:
+    raw_profile = profile.get("raw_profile") if isinstance(profile.get("raw_profile"), dict) else {}
+    for key in ("raw_resume_text", "experience", "summary"):
+        value = raw_profile.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    chunks = profile.get("chunks") if isinstance(profile.get("chunks"), list) else []
+    chunk_texts: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        value = str(chunk.get("content") or "").strip()
+        if value:
+            chunk_texts.append(value)
+    return "\n\n".join(chunk_texts).strip()
+
+
+def _search_profile_markdown(profile: dict) -> str:
+    name = str(profile.get("name") or "未命名候选人").strip() or "未命名候选人"
+    source = str(profile.get("source") or "").strip()
+    education = str(profile.get("education_level") or "").strip()
+    years_experience = profile.get("years_experience")
+    location = str(profile.get("city") or "").strip()
+    resume_text = _search_profile_resume_text(profile)
+    lines = [f"# {name}", ""]
+    if source:
+        lines.append(f"- 来源：{source}")
+    if years_experience not in (None, ""):
+        lines.append(f"- 工作年限：{years_experience} 年")
+    if education:
+        lines.append(f"- 学历：{education}")
+    if location:
+        lines.append(f"- 城市：{location}")
+    lines.extend(["", "## 简历正文", "", resume_text or "（暂无可展示文本）"])
+    return "\n".join(lines).strip() + "\n"
 
 
 def _load_admin_frontend_manifest() -> dict | None:
@@ -320,6 +362,27 @@ def _require_admin_json(handler):
     return None
 
 
+def _require_auth_json(handler):
+    if not _current_session(handler):
+        return _json(HTTPStatus.UNAUTHORIZED, {"error": "请先登录"})
+    return None
+
+
+def _resolve_email_ingest_user_id(handler, requested_user_id: str | None) -> tuple[str | None, tuple[int, bytes] | None]:
+    current_user_id = str(_current_user_id(handler) or "").strip()
+    if not current_user_id:
+        return None, _json(HTTPStatus.UNAUTHORIZED, {"error": "请先登录"})
+    normalized = str(requested_user_id or "").strip() or current_user_id
+    is_admin = _current_user_role(handler) == "admin"
+    if not is_admin and normalized != current_user_id:
+        return None, _json(HTTPStatus.FORBIDDEN, {"error": "仅管理员可操作其他用户任务"})
+    return normalized, None
+
+
+def _email_ingest_service() -> EmailResumeIngestService:
+    return EmailResumeIngestService(search_service=SEARCH_SERVICE)
+
+
 def _force_model_env() -> None:
     os.environ["SCREENING_BROWSER_AGENT"] = "playwright"
     os.environ["SCREENING_ENABLE_MODEL_EXTRACTION"] = "true"
@@ -347,9 +410,13 @@ def _model_precheck_error() -> str | None:
         command_tokens = shlex.split(raw_command)
         if not command_tokens:
             return "SCREENING_KIMI_CLI_COMMAND 为空，请检查配置"
-        command = command_tokens[0]
+        command = GPTFieldExtractor._resolve_kimi_cli_executable(command_tokens[0])
         if not (shutil.which(command) or Path(command).exists()):
-            return f"Kimi CLI 命令不存在：{command}，请先安装并确保可执行"
+            return f"Kimi CLI 命令不存在：{command_tokens[0]}，请先安装并确保可执行"
+        has_inline_config = bool(os.getenv("SCREENING_KIMI_CLI_CONFIG", "").strip() or os.getenv("SCREENING_KIMI_CLI_API_KEY", "").strip())
+        has_default_config = (Path.home() / ".kimi" / "config.toml").exists()
+        if not (has_inline_config or has_default_config):
+            return "请先配置 SCREENING_KIMI_CLI_API_KEY，或先执行 kimi login / 准备 ~/.kimi/config.toml"
         return None
     if not os.getenv("SCREENING_LLM_API_KEY"):
         return "请先配置 SCREENING_LLM_API_KEY（当前未使用硅基流动）"
@@ -359,7 +426,62 @@ def _model_precheck_error() -> str | None:
 def _with_recommend_search_defaults(search_config: dict | None) -> dict:
     merged = dict(search_config or {})
     merged.setdefault("skip_existing_candidates", True)
+    merged.setdefault("login_scan_wait_seconds", 15)
     return merged
+
+
+def _force_recommend_attach_chrome() -> None:
+    """
+    Recommend flow runs in attach-only mode:
+    never launch a new browser process, only attach to the HR-opened Chrome.
+    """
+    os.environ["SCREENING_BROWSER_CDP_PORT"] = "9222"
+    os.environ["SCREENING_BROWSER_CDP_URL"] = "http://127.0.0.1:9222"
+    os.environ["SCREENING_BROWSER_CDP_REQUIRED"] = "true"
+    os.environ["SCREENING_BROWSER_FALLBACK_CDP_PORTS"] = "9222"
+
+
+def _active_browser_agent() -> str:
+    return str(os.getenv("SCREENING_BROWSER_AGENT", "mock") or "mock").strip().lower()
+
+
+def _recommend_requires_cdp_9222_precheck() -> bool:
+    if _active_browser_agent() == "playwright":
+        return True
+    raw = str(os.getenv("SCREENING_RECOMMEND_REQUIRE_CDP_9222", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _probe_cdp_9222_chrome(timeout_seconds: float = 1.2) -> tuple[bool, str]:
+    url = "http://127.0.0.1:9222/json/version"
+    try:
+        request = urllib_request.Request(url, headers={"Accept": "application/json"})
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        return False, f"无法访问 {url}（{exc}）。"
+
+    if not isinstance(payload, dict):
+        return False, f"{url} 返回了异常数据。"
+
+    browser = str(payload.get("Browser") or "").strip()
+    ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+    if not browser and not ws_url:
+        return False, "9222 端口已被占用，但不是可附着的 Chrome 调试实例。"
+    return True, ""
+
+
+def _recommend_cdp_9222_precheck_error() -> str | None:
+    if not _recommend_requires_cdp_9222_precheck():
+        return None
+    ok, detail = _probe_cdp_9222_chrome()
+    if ok:
+        return None
+    return (
+        "未检测到本机 9222 端口可附着的 Chrome 调试实例。"
+        f"{detail}请先用 `--remote-debugging-port=9222` 启动 Chrome，"
+        "并在该浏览器中手工登录 BOSS 后再创建推荐牛人简历分析任务。"
+    )
 
 
 def _read_json(handler) -> dict:
@@ -640,7 +762,7 @@ def _task_runner_page_html(username: str) -> str:
     <div class="grid">
       <div class="card">
         <h1>创建并执行任务</h1>
-        <div class="muted">执行顺序已固定：HR 先在已安装插件的 Chrome 中手动登录 BOSS，然后直接在登录好的浏览器里采集当前页面，再执行 recommend 筛选、打分；分数达到评分卡 recommend 阈值后会自动点击“打招呼”。</div>
+        <div class="muted">执行顺序：HR 先在本机 9222 调试 Chrome 中手工登录 BOSS；点击创建任务后系统会直接复用该会话执行 recommend 筛选、打分，达到阈值后自动点击“打招呼”。</div>
         <div class="form">
           <div class="field">
             <label>岗位</label>
@@ -732,7 +854,7 @@ def _task_runner_page_html(username: str) -> str:
 
     async function createAndRun() {{
       runBtn.disabled = true;
-      log("开始创建并执行任务（流程：手动登录浏览器 -> 当前页采集 -> recommend筛选 -> 达到评分卡阈值后自动打招呼）...");
+      log("开始创建并执行任务（流程：9222检测 -> 复用已登录的可附着Chrome -> recommend抓取与评分 -> 达到评分卡阈值后自动打招呼）...");
       try {{
         const searchConfig = {{}};
         const thresholdValue = Number(autoGreetThreshold.value);
@@ -3041,6 +3163,10 @@ def handle_request(handler):
                 display_name=str(payload.get("display_name") or "").strip() or None,
                 role=str(payload.get("role") or "hr"),
                 active=bool(payload.get("active", True)),
+                default_scorecard_id=str(payload.get("default_scorecard_id") or "").strip() or None,
+                email_ingest_enabled=bool(payload.get("email_ingest_enabled", False)),
+                email_ingest_interval_minutes=payload.get("email_ingest_interval_minutes", 60),
+                email_ingest_directory=str(payload.get("email_ingest_directory") or "").strip() or None,
                 notes=str(payload.get("notes") or "").strip() or None,
                 operator=_current_user(handler) or "admin",
             )
@@ -3080,6 +3206,16 @@ def handle_request(handler):
                 display_name=str(payload.get("display_name") or "").strip() or None,
                 role=str(payload.get("role") or "hr"),
                 active=bool(payload.get("active", True)),
+                default_scorecard_id=(
+                    str(payload.get("default_scorecard_id") or "").strip() if "default_scorecard_id" in payload else None
+                ),
+                email_ingest_enabled=(bool(payload.get("email_ingest_enabled")) if "email_ingest_enabled" in payload else None),
+                email_ingest_interval_minutes=(
+                    payload.get("email_ingest_interval_minutes") if "email_ingest_interval_minutes" in payload else None
+                ),
+                email_ingest_directory=(
+                    str(payload.get("email_ingest_directory") or "") if "email_ingest_directory" in payload else None
+                ),
                 notes=str(payload.get("notes") or "").strip() if "notes" in payload else None,
                 operator=_current_user(handler) or "admin",
             )
@@ -3172,6 +3308,24 @@ def handle_request(handler):
         return _html(
             HTTPStatus.OK,
             "<!doctype html><html><body><h1>批量导入简历并打分</h1><p>请构建最新后台前端后访问。</p></body></html>",
+        )
+
+    if method == "GET" and path == "/hr/email-ingest":
+        username = _current_user(handler) or AUTH_USERNAME
+        shell = _admin_frontend_shell(
+            title="邮箱自动采集",
+            page_key="email-ingest",
+            fallback_heading="邮箱自动采集",
+            fallback_description="配置自动采集开关、默认评分卡、执行间隔，并支持立即采集。",
+            current_path=path,
+            username=username,
+            user_role=_current_user_role(handler),
+        )
+        if shell:
+            return _html(HTTPStatus.OK, shell)
+        return _html(
+            HTTPStatus.OK,
+            "<!doctype html><html><body><h1>邮箱自动采集</h1><p>请构建最新后台前端后访问。</p></body></html>",
         )
 
     if method == "GET" and path == "/hr/workbench":
@@ -3283,6 +3437,176 @@ def handle_request(handler):
 
     if method == "GET" and path == "/api/v2/resume-imports":
         return _json(HTTPStatus.OK, {"items": list_resume_import_batches(limit=50)})
+
+    if method == "GET" and path == "/api/email-ingest/users":
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        query = parse_qs(parsed.query or "")
+        requested_user_id = str((query.get("user_id") or [""])[0] or "").strip() or None
+        resolved_user_id, resolve_error = _resolve_email_ingest_user_id(handler, requested_user_id)
+        if resolve_error is not None:
+            return resolve_error
+        due_only = _bool_query_param((query.get("due_only") or [None])[0])
+        if _current_user_role(handler) == "admin":
+            users = list_hr_users()
+            if requested_user_id:
+                users = [item for item in users if str(item.get("id") or "") == str(requested_user_id)]
+        else:
+            users = [item for item in list_hr_users() if str(item.get("id") or "") == str(resolved_user_id or "")]
+        if due_only:
+            due_set = {
+                str(item.get("id") or "")
+                for item in list_email_ingest_users(due_only=True)
+            }
+            users = [item for item in users if str(item.get("id") or "") in due_set]
+        return _json(HTTPStatus.OK, {"items": users})
+
+    if method == "GET" and path == "/api/email-ingest/records":
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        query = parse_qs(parsed.query or "")
+        requested_user_id = str((query.get("user_id") or [""])[0] or "").strip() or None
+        resolved_user_id, resolve_error = _resolve_email_ingest_user_id(handler, requested_user_id)
+        if resolve_error is not None:
+            return resolve_error
+        if _current_user_role(handler) == "admin":
+            user_id = requested_user_id
+        else:
+            user_id = resolved_user_id
+        status = str((query.get("status") or [""])[0] or "").strip() or None
+        try:
+            limit = max(1, min(int((query.get("limit") or ["200"])[0] or 200), 1000))
+        except Exception:
+            limit = 200
+        items = _email_ingest_service().list_records(user_id=user_id, status=status, limit=limit)
+        return _json(HTTPStatus.OK, {"items": items})
+
+    if method == "GET" and path.startswith("/api/email-ingest/records/") and path.endswith("/file"):
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        record_id = unquote(path.removeprefix("/api/email-ingest/records/").removesuffix("/file").strip("/"))
+        if "/" in record_id or not record_id:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "记录不存在"})
+        record = _email_ingest_service().get_record(record_id=record_id)
+        if not record:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "记录不存在"})
+        if _current_user_role(handler) != "admin":
+            current_user_id = str(_current_user_id(handler) or "").strip()
+            record_user_id = str(record.get("user_id") or "").strip()
+            if not current_user_id or current_user_id != record_user_id:
+                return _json(HTTPStatus.FORBIDDEN, {"error": "无权限查看该文件"})
+        target = Path(str(record.get("file_path") or "")).expanduser()
+        if not target.exists() or not target.is_file():
+            return _json(HTTPStatus.NOT_FOUND, {"error": "文件不存在"})
+        mime, _ = mimetypes.guess_type(str(target))
+        filename = target.name or "resume"
+        headers = {
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+        }
+        return _body(HTTPStatus.OK, target.read_bytes(), mime or "application/octet-stream", headers=headers)
+
+    if method == "POST" and path.startswith("/api/email-ingest/users/") and path.endswith("/config"):
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        user_id = path.removeprefix("/api/email-ingest/users/").removesuffix("/config").strip("/")
+        if "/" in user_id or not user_id:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "User not found"})
+        resolved_user_id, resolve_error = _resolve_email_ingest_user_id(handler, user_id)
+        if resolve_error is not None:
+            return resolve_error
+        payload = _read_json(handler)
+        try:
+            user = update_hr_user(
+                user_id=str(resolved_user_id or ""),
+                display_name=str(payload.get("display_name") or "").strip() or None,
+                role=(str(payload.get("role") or "").strip() or None),
+                active=(bool(payload.get("active")) if "active" in payload else None),
+                default_scorecard_id=(
+                    str(payload.get("default_scorecard_id") or "").strip() if "default_scorecard_id" in payload else None
+                ),
+                email_ingest_enabled=(bool(payload.get("email_ingest_enabled")) if "email_ingest_enabled" in payload else None),
+                email_ingest_interval_minutes=(
+                    payload.get("email_ingest_interval_minutes") if "email_ingest_interval_minutes" in payload else None
+                ),
+                email_ingest_directory=(
+                    str(payload.get("email_ingest_directory") or "") if "email_ingest_directory" in payload else None
+                ),
+                notes=(str(payload.get("notes") or "").strip() if "notes" in payload else None),
+                operator=_current_user(handler) or "hr_ui",
+            )
+        except LookupError as exc:
+            return _json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except ValueError as exc:
+            return _json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        return _json(HTTPStatus.OK, {"ok": True, "user": user})
+
+    if method == "POST" and path == "/api/email-ingest/run-once":
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        payload = _read_json(handler)
+        ingest_directory_raw = payload.get("ingest_directory")
+        if ingest_directory_raw in (None, ""):
+            ingest_directory_raw = payload.get("ingestDirectory")
+        if ingest_directory_raw in (None, ""):
+            ingest_directory_raw = payload.get("email_ingest_directory")
+        requested_user_id = str(payload.get("user_id") or "").strip() or None
+        resolved_user_id, resolve_error = _resolve_email_ingest_user_id(handler, requested_user_id)
+        if resolve_error is not None:
+            return resolve_error
+        try:
+            max_files = payload.get("max_files")
+            result = _email_ingest_service().run_once(
+                user_id=str(resolved_user_id or ""),
+                trigger=str(payload.get("trigger") or "manual_api"),
+                max_files=(max(1, int(max_files)) if max_files not in (None, "", 0) else None),
+                ingest_directory=(
+                    str(ingest_directory_raw or "").strip() if ingest_directory_raw not in (None, "") else None
+                ),
+            )
+            return _json(HTTPStatus.OK, {"ok": True, "result": result})
+        except (LookupError, ValueError) as exc:
+            return _json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            return _json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    if method == "POST" and path == "/api/email-ingest/run-due":
+        auth_error = _require_admin_json(handler)
+        if auth_error is not None:
+            return auth_error
+        try:
+            result = _email_ingest_service().run_due_users()
+            return _json(HTTPStatus.OK, result)
+        except Exception as exc:
+            return _json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    if method == "POST" and path == "/api/email-ingest/retry-failed":
+        auth_error = _require_auth_json(handler)
+        if auth_error is not None:
+            return auth_error
+        payload = _read_json(handler)
+        requested_user_id = str(payload.get("user_id") or "").strip() or None
+        resolved_user_id, resolve_error = _resolve_email_ingest_user_id(handler, requested_user_id)
+        if resolve_error is not None:
+            return resolve_error
+        if _current_user_role(handler) == "admin":
+            user_id = requested_user_id
+        else:
+            user_id = resolved_user_id
+        try:
+            result = _email_ingest_service().retry_failed(
+                user_id=user_id,
+                max_retry=max(1, int(payload.get("max_retry") or 3)),
+                limit=max(1, int(payload.get("limit") or 50)),
+            )
+            return _json(HTTPStatus.OK, result)
+        except Exception as exc:
+            return _json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     if method == "POST" and path == "/api/v2/resume-imports":
         payload = _read_json(handler)
@@ -3509,8 +3833,41 @@ def handle_request(handler):
             return _json(HTTPStatus.NOT_FOUND, {"error": "Search run not found"})
         return _json(HTTPStatus.OK, result)
 
+    if method == "GET" and path.startswith("/api/v3/candidates/") and path.endswith("/resume-full"):
+        profile_id = unquote(path.split("/")[-2])
+        try:
+            profile = SEARCH_SERVICE.get_search_profile(profile_id)
+        except KeyError:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "Search profile not found"})
+        resume_entry = profile.get("raw_resume_entry") if isinstance(profile.get("raw_resume_entry"), dict) else {}
+        resume_path = str(resume_entry.get("file_path") or resume_entry.get("resume_path") or "").strip()
+        if resume_path:
+            resume_file = Path(resume_path)
+            if resume_file.exists() and resume_file.is_file():
+                mime, _ = mimetypes.guess_type(str(resume_file))
+                return _body(HTTPStatus.OK, resume_file.read_bytes(), mime or "application/octet-stream")
+        resume_text = _search_profile_resume_text(profile)
+        if not resume_text:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "Resume content not found"})
+        return _body(HTTPStatus.OK, resume_text.encode("utf-8"), "text/plain; charset=utf-8")
+
+    if method == "GET" and path.startswith("/api/v3/candidates/") and path.endswith("/resume-markdown"):
+        profile_id = unquote(path.split("/")[-2])
+        try:
+            profile = SEARCH_SERVICE.get_search_profile(profile_id)
+        except KeyError:
+            return _json(HTTPStatus.NOT_FOUND, {"error": "Search profile not found"})
+        resume_entry = profile.get("raw_resume_entry") if isinstance(profile.get("raw_resume_entry"), dict) else {}
+        markdown_path = str(resume_entry.get("resume_markdown_path") or "").strip()
+        if markdown_path:
+            markdown_file = Path(markdown_path)
+            if markdown_file.exists() and markdown_file.is_file():
+                return _body(HTTPStatus.OK, markdown_file.read_bytes(), "text/markdown; charset=utf-8")
+        markdown_body = _search_profile_markdown(profile)
+        return _body(HTTPStatus.OK, markdown_body.encode("utf-8"), "text/markdown; charset=utf-8")
+
     if method == "GET" and path.startswith("/api/v3/candidates/") and path.endswith("/search-profile"):
-        candidate_id = path.split("/")[-2]
+        candidate_id = unquote(path.split("/")[-2])
         try:
             profile = SEARCH_SERVICE.get_search_profile(candidate_id)
         except KeyError:
@@ -3671,6 +4028,10 @@ def handle_request(handler):
             return _json(HTTPStatus.BAD_REQUEST, {"error": precheck_error})
 
         _force_model_env()
+        _force_recommend_attach_chrome()
+        precheck_error = _recommend_cdp_9222_precheck_error()
+        if precheck_error:
+            return _json(HTTPStatus.BAD_REQUEST, {"error": precheck_error})
         search_config = payload.get("search_config") if isinstance(payload.get("search_config"), dict) else {}
         auto_greet_threshold = payload.get("auto_greet_threshold")
         if auto_greet_threshold not in (None, "") and "auto_greet_threshold" not in search_config:
@@ -3719,6 +4080,7 @@ def handle_request(handler):
         if not get_scoring_target(str(payload.get("job_id") or "")):
             return _json(HTTPStatus.BAD_REQUEST, {"error": "Unknown job_id"})
         payload["search_mode"] = "recommend"
+        _force_recommend_attach_chrome()
         payload.setdefault("sort_by", "active")
         payload.setdefault("max_pages", 1)
         payload["search_config"] = _with_recommend_search_defaults(payload.get("search_config") if isinstance(payload.get("search_config"), dict) else {})
@@ -3736,6 +4098,7 @@ def handle_request(handler):
     if method == "POST" and path.startswith("/api/tasks/") and path.endswith("/start"):
         task_id = path.split("/")[-2]
         _force_model_env()
+        _force_recommend_attach_chrome()
         global ORCHESTRATOR
         if type(getattr(ORCHESTRATOR, "browser_agent", None)).__name__ != "MockBrowserAgent":
             ORCHESTRATOR = ScreeningOrchestrator(search_service=SEARCH_SERVICE)

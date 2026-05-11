@@ -126,8 +126,8 @@ http://127.0.0.1:8080
 - `install/packages/windows/admin_frontend-dist.zip`
 - `install/packages/macos/.env.local.example`
 - `install/packages/chrome_extension/boss_resume_score.zip`
-- `release/HRClaw_windows_bundle.zip`
-- `release/HRClaw_macos_bundle.zip`
+- `release/HRClaw_windows_offline_bundle.zip`
+- `release/HRClaw_macos_tahoe_arm64_bundle.zip`
 
 这些包已经和当前后台页面、插件侧边栏版本同步，适合直接分发和试点。
 

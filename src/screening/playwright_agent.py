@@ -58,6 +58,7 @@ class PlaywrightLocalAgent:
         self.existing_candidate_checker = existing_candidate_checker or list_seen_candidate_external_ids
         self.session_id: str | None = None
         self._greet_count = 0
+        self._trace_logger = None
 
     def start_session(self) -> str:
         self.session_id = self.runtime.start()
@@ -67,6 +68,9 @@ class PlaywrightLocalAgent:
     def stop_session(self) -> None:
         self.runtime.stop()
         self.session_id = None
+
+    def set_trace_logger(self, logger) -> None:
+        self._trace_logger = logger
 
     def collect_candidates(
         self,
@@ -227,10 +231,25 @@ class PlaywrightLocalAgent:
         max_pages: int,
         search_config: dict[str, Any],
     ) -> list[CandidateExtract]:
-        self.runtime.goto_recommend_page(self.selectors)
+        self._ensure_recommend_login_ready()
+        self._trace("recommend.attach_ready", current_url=self.runtime.current_url)
         self._handle_login_scan_wait(search_config, flow="recommend")
         self._handle_manual_verification(search_config, flow="recommend")
-        if not self.runtime.wait_for_any(self.selectors.recommend_list_ready, timeout_ms=15000):
+        self.runtime.goto_recommend_page(self.selectors)
+        self._trace("recommend.page_ready", current_url=self.runtime.current_url)
+        self._ensure_recommend_login_ready()
+        self._handle_login_scan_wait(search_config, flow="recommend")
+        self._handle_manual_verification(search_config, flow="recommend")
+        wait_for_recommend_list_ready = getattr(self.runtime, "wait_for_recommend_list_ready", None)
+        recommend_ready = None
+        if callable(wait_for_recommend_list_ready):
+            recommend_ready = wait_for_recommend_list_ready(self.selectors, timeout_ms=15000)
+        else:
+            recommend_ready = self.runtime.wait_for_any(self.selectors.recommend_list_ready, timeout_ms=15000)
+        recommend_ready_info = self._normalize_recommend_ready_info(recommend_ready, current_url=self.runtime.current_url)
+        if recommend_ready_info:
+            self._trace("recommend.list_ready", **recommend_ready_info)
+        if not recommend_ready:
             self._handle_login_scan_wait(search_config, flow="recommend")
             self._handle_manual_verification(search_config, flow="recommend")
             if not self.runtime.wait_for_any(("body",), timeout_ms=5000):
@@ -254,45 +273,95 @@ class PlaywrightLocalAgent:
             self._handle_login_scan_wait(search_config, flow="recommend")
             self._handle_manual_verification(search_config, flow="recommend")
             page_cards = self.runtime.collect_recommend_cards(self.selectors, max_candidates * 2)
+            self._trace(
+                "recommend.cards_collected",
+                page_index=page_index,
+                card_count=len(page_cards),
+                current_url=self.runtime.current_url,
+                ready_selector=(recommend_ready_info or {}).get("ready_selector"),
+                frame_name=(recommend_ready_info or {}).get("frame_name"),
+                frame_url=(recommend_ready_info or {}).get("frame_url"),
+            )
             if not page_cards and page_index == 1:
-                for _ in range(6):
-                    self._handle_login_scan_wait(search_config, flow="recommend")
-                    self._handle_manual_verification(search_config, flow="recommend")
-                    self.runtime.wait_for_any(self.selectors.recommend_list_ready, timeout_ms=2000)
-                    page_cards = self.runtime.collect_recommend_cards(self.selectors, max_candidates * 2)
-                    if page_cards:
-                        break
+                # Keep first-page recovery gentle: wait once for manual login/redirect
+                # completion, then retry collection a single time.
+                self._handle_login_scan_wait(search_config, flow="recommend")
+                self._handle_manual_verification(search_config, flow="recommend")
+                if callable(wait_for_recommend_list_ready):
+                    recommend_ready = wait_for_recommend_list_ready(self.selectors, timeout_ms=5000)
+                else:
+                    recommend_ready = self.runtime.wait_for_any(self.selectors.recommend_list_ready, timeout_ms=5000)
+                recommend_ready_info = self._normalize_recommend_ready_info(recommend_ready, current_url=self.runtime.current_url)
+                if recommend_ready_info:
+                    self._trace("recommend.list_ready_retry", **recommend_ready_info)
+                page_cards = self.runtime.collect_recommend_cards(self.selectors, max_candidates * 2)
+                self._trace(
+                    "recommend.cards_retried",
+                    page_index=page_index,
+                    card_count=len(page_cards),
+                    current_url=self.runtime.current_url,
+                    ready_selector=(recommend_ready_info or {}).get("ready_selector"),
+                    frame_name=(recommend_ready_info or {}).get("frame_name"),
+                    frame_url=(recommend_ready_info or {}).get("frame_url"),
+                )
             if not page_cards:
                 self._handle_login_scan_wait(search_config, flow="recommend")
                 self._handle_manual_verification(search_config, flow="recommend")
+                self._trace(
+                    "recommend.cards_empty",
+                    page_index=page_index,
+                    current_url=self.runtime.current_url,
+                    ready_selector=(recommend_ready_info or {}).get("ready_selector"),
+                    frame_name=(recommend_ready_info or {}).get("frame_name"),
+                    frame_url=(recommend_ready_info or {}).get("frame_url"),
+                )
+                if page_index == 1:
+                    detail_parts = [
+                        "No recommend candidate cards detected on first page.",
+                        f"current_url={self.runtime.current_url}",
+                    ]
+                    if recommend_ready_info:
+                        if recommend_ready_info.get("ready_selector"):
+                            detail_parts.append(f"ready_selector={recommend_ready_info['ready_selector']}")
+                        if recommend_ready_info.get("frame_url"):
+                            detail_parts.append(f"frame_url={recommend_ready_info['frame_url']}")
+                        if recommend_ready_info.get("card_count") is not None:
+                            detail_parts.append(f"card_count={recommend_ready_info.get('card_count')}")
+                    raise RuntimeError(" ".join(detail_parts))
                 break
 
-            page_processed = 0
-            while len(candidates) < max_candidates:
-                current_cards = self.runtime.collect_recommend_cards(self.selectors, max_candidates * 2) or page_cards
-                recent_seen = self._recent_seen_external_ids(current_cards, search_config)
-                target_card: dict[str, Any] | None = None
-                target_key: str | None = None
-                for card in current_cards:
-                    key = str(
-                        card.get("external_id")
-                        or card.get("detail_url")
-                        or f"p{page_index}-i{card.get('card_index')}"
-                    )
-                    if key in seen_card_keys:
-                        continue
-                    if card.get("external_id") in recent_seen:
-                        continue
-                    target_card = card
-                    target_key = key
-                    break
+            recent_seen = self._recent_seen_external_ids(page_cards, search_config)
+            pending_cards: list[tuple[str, dict[str, Any]]] = []
+            for card in page_cards:
+                key = f"p{page_index}-i{card.get('card_index')}"
+                if key in seen_card_keys:
+                    continue
+                if card.get("external_id") in recent_seen:
+                    continue
+                pending_cards.append((key, card))
+            self._trace(
+                "recommend.pending_cards",
+                page_index=page_index,
+                pending_count=len(pending_cards),
+                skipped_existing=len(page_cards) - len(pending_cards),
+            )
 
-                if target_card is None:
+            page_processed = 0
+            page_needs_recovery = False
+            for target_key, target_card in pending_cards:
+                if len(candidates) >= max_candidates:
                     break
 
                 seen_card_keys.add(target_key or "")
                 target_card["page_index"] = page_index
                 candidate_index += 1
+                self._trace(
+                    "recommend.candidate_opening",
+                    page_index=page_index,
+                    card_index=target_card.get("card_index"),
+                    external_id=target_card.get("external_id"),
+                    name=target_card.get("name"),
+                )
                 current_candidate: CandidateExtract | None = None
                 close_result = None
                 try:
@@ -300,6 +369,9 @@ class PlaywrightLocalAgent:
                     self._handle_manual_verification(search_config, flow="recommend")
                     self._pause_for_human_browse(search_config, stage="open_candidate")
                     self.runtime.open_recommend_candidate(target_card, self.selectors)
+                    resume_full_screenshot_path, resume_full_screenshot_error = self._safe_persist_resume_full_screenshot(
+                        target_card.get("external_id") or f"candidate-{candidate_index}",
+                    )
                     detail = self.runtime.extract_recommend_detail_payload(self.selectors)
                     download_result = self.runtime.download_resume(
                         self.selectors,
@@ -338,6 +410,7 @@ class PlaywrightLocalAgent:
                         label=f"{job_id}_candidate_{candidate_index}",
                         content_html=detail.get("content_html"),
                         page_html=detail.get("page_html"),
+                        resume_full_screenshot_path=resume_full_screenshot_path,
                     )
                     years_experience = target_card.get("years_experience") or extract_years_experience(merged_text)
                     if item.get("years_experience"):
@@ -365,6 +438,16 @@ class PlaywrightLocalAgent:
                         enabled=auto_greet_enabled,
                         max_actions=auto_greet_max,
                         allow_non_recommend=auto_greet_allow_non_recommend,
+                    )
+                    self._trace(
+                        "recommend.candidate_scored",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        external_id=target_card.get("external_id"),
+                        score=pre_score.total_score,
+                        decision=pre_score.decision.value,
+                        auto_greet_clicked=bool(greet_info.get("auto_greet_clicked")),
+                        auto_greet_reason=greet_info.get("auto_greet_reason"),
                     )
                     current_candidate = CandidateExtract(
                         external_id=target_card.get("external_id")
@@ -414,7 +497,16 @@ class PlaywrightLocalAgent:
                     )
                     candidates.append(current_candidate)
                     page_processed += 1
-                except Exception:
+                except Exception as exc:
+                    self._trace(
+                        "recommend.candidate_failed",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        external_id=target_card.get("external_id"),
+                        name=target_card.get("name"),
+                        error=str(exc),
+                        current_url=self.runtime.current_url,
+                    )
                     # Single card failures should not abort the whole task.
                     pass
                 finally:
@@ -422,16 +514,58 @@ class PlaywrightLocalAgent:
                         close_result = self.runtime.close_recommend_detail(self.selectors)
                     except Exception:
                         close_result = False
+                    self._trace(
+                        "recommend.detail_closed",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        closed=bool(close_result),
+                        current_url=self.runtime.current_url,
+                    )
                     if current_candidate is not None:
                         current_candidate.evidence_map["recommend_detail_closed"] = bool(close_result)
+                    if not close_result:
+                        page_needs_recovery = True
+                if page_needs_recovery:
+                    break
 
             if len(candidates) >= max_candidates:
                 break
+            if page_needs_recovery:
+                recovered = False
+                recover_recommend_list = getattr(self.runtime, "recover_recommend_list", None)
+                if callable(recover_recommend_list):
+                    try:
+                        recovered = bool(recover_recommend_list(self.selectors))
+                    except Exception:
+                        recovered = False
+                self._trace(
+                    "recommend.page_recover",
+                    page_index=page_index,
+                    recovered=recovered,
+                    current_url=self.runtime.current_url,
+                )
+                if recovered:
+                    continue
+                if page_processed == 0:
+                    self._trace("recommend.page_stalled", page_index=page_index, current_url=self.runtime.current_url)
+                break
             # Prevent infinite page turning when no usable cards are found.
             if page_processed == 0:
+                self._trace("recommend.page_stalled", page_index=page_index, current_url=self.runtime.current_url)
                 break
             self._pause_for_human_browse(search_config, stage="page_turn")
-            if not self.runtime.go_to_next_page(self.selectors):
+            go_to_next_recommend_page = getattr(self.runtime, "go_to_next_recommend_page", None)
+            if callable(go_to_next_recommend_page):
+                has_next_page = bool(go_to_next_recommend_page(self.selectors))
+            else:
+                has_next_page = bool(self.runtime.go_to_next_page(self.selectors))
+            self._trace(
+                "recommend.page_turn",
+                page_index=page_index,
+                has_next_page=has_next_page,
+                current_url=self.runtime.current_url,
+            )
+            if not has_next_page:
                 break
             page_index += 1
 
@@ -440,7 +574,14 @@ class PlaywrightLocalAgent:
     def _recent_seen_external_ids(self, cards: list[dict[str, Any]], search_config: dict[str, Any]) -> set[str]:
         if not self._is_truthy(search_config.get("skip_existing_candidates"), default=False):
             return set()
-        external_ids = [str(card.get("external_id") or "").strip() for card in cards if str(card.get("external_id") or "").strip()]
+        external_ids = []
+        for card in cards:
+            external_id = str(card.get("external_id") or "").strip()
+            if not external_id:
+                continue
+            if re.fullmatch(r"playwright-\d+", external_id):
+                continue
+            external_ids.append(external_id)
         if not external_ids:
             return set()
         max_age_hours = search_config.get("refresh_window_hours")
@@ -468,6 +609,29 @@ class PlaywrightLocalAgent:
         if delay <= 0:
             return
         time.sleep(delay)
+
+    def _trace(self, event_type: str, **payload: Any) -> None:
+        logger = self._trace_logger
+        if not callable(logger):
+            return
+        try:
+            logger(event_type, payload)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _normalize_recommend_ready_info(ready_state: Any, *, current_url: str | None = None) -> dict[str, Any] | None:
+        if isinstance(ready_state, dict):
+            info = dict(ready_state)
+        elif isinstance(ready_state, str):
+            info = {"ready_selector": ready_state}
+        elif ready_state:
+            info = {"ready_selector": str(ready_state)}
+        else:
+            return None
+        if current_url and not info.get("current_url"):
+            info["current_url"] = current_url
+        return info
 
     @staticmethod
     def _coerce_text_list(*values: Any) -> list[str]:
@@ -567,6 +731,11 @@ class PlaywrightLocalAgent:
             needs_scan = False
         if not needs_scan:
             return
+        if flow == "recommend":
+            raise RuntimeError(
+                "推荐牛人流程要求先在 9222 可附着的 Chrome 中手工登录 BOSS。"
+                "当前仍停留在登录/扫码页，请先在 9222 Chrome 完成登录后再创建任务。"
+            )
         wait_timeout_seconds = self._float_value(
             search_config.get("login_scan_wait_seconds"),
             fallback=self._float_env("SCREENING_LOGIN_SCAN_WAIT_SECONDS", default=15.0),
@@ -577,6 +746,20 @@ class PlaywrightLocalAgent:
             if cleared:
                 return
         raise RuntimeError(f"BOSS {flow} page is waiting for QR scan login before continuing.")
+
+    def _ensure_recommend_login_ready(self) -> None:
+        checker = getattr(self.runtime, "is_login_scan_page", None)
+        if not callable(checker):
+            return
+        try:
+            needs_scan = bool(checker())
+        except Exception:
+            needs_scan = False
+        if needs_scan:
+            raise RuntimeError(
+                "推荐牛人流程要求先在 9222 可附着的 Chrome 中手工登录 BOSS。"
+                "当前仍停留在登录/扫码页，请先在 9222 Chrome 完成登录后再创建任务。"
+            )
 
     def _try_auto_greet(
         self,
@@ -716,8 +899,11 @@ class PlaywrightLocalAgent:
         label: str | None = None,
         content_html: str | None = None,
         page_html: str | None = None,
+        resume_full_screenshot_path: str | None = None,
     ) -> dict[str, Any]:
-        resume_full_screenshot_path, resume_full_screenshot_error = self._safe_persist_resume_full_screenshot(external_id)
+        resume_full_screenshot_error = None
+        if resume_full_screenshot_path is None:
+            resume_full_screenshot_path, resume_full_screenshot_error = self._safe_persist_resume_full_screenshot(external_id)
         resume_markdown_path, resume_markdown_error = self._safe_persist_resume_markdown(
             external_id,
             content,

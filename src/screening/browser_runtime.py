@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
 import re
 import time
@@ -10,6 +11,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from urllib.parse import urljoin, urlparse, urlunparse
 
 try:
@@ -173,26 +176,8 @@ class PlaywrightBrowserRuntime:
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.resume_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
-        if self.cdp_url:
-            self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
-            self._owns_browser = False
-            contexts = list(getattr(self._browser, "contexts", []) or [])
-            if not contexts:
-                raise BrowserRuntimeError(
-                    f"No browser context available on attached Chrome session: {self.cdp_url}. "
-                    "Start Chrome with a visible profile and remote debugging enabled."
-                )
-            self._context = contexts[0]
-            self._owns_context = False
-            self._page = self._select_attached_page(self._context.pages)
-            if self._page is None:
-                self._page = self._context.new_page()
-                self._owns_page = True
-            else:
-                self._owns_page = False
-            if self.start_url and self._is_blank_page_url(self._page.url):
-                self._page.goto(self.start_url, wait_until="domcontentloaded")
-        else:
+        attached = self._try_attach_to_existing_browser()
+        if not attached:
             launch_kwargs: dict[str, Any] = {"headless": self.headless}
             executable_path = self._resolve_browser_executable_path()
             if executable_path is not None:
@@ -212,6 +197,142 @@ class PlaywrightBrowserRuntime:
             if self.start_url:
                 self._page.goto(self.start_url, wait_until="domcontentloaded")
         return self.session_id
+
+    def _try_attach_to_existing_browser(self) -> bool:
+        if not self.cdp_url:
+            return False
+        if self._playwright is None:
+            return False
+
+        attempted: list[str] = []
+        errors: list[str] = []
+        for endpoint in self._candidate_cdp_urls():
+            if endpoint in attempted:
+                continue
+            attempted.append(endpoint)
+            connect_target = self._resolve_cdp_connect_target(endpoint)
+            try:
+                browser = self._playwright.chromium.connect_over_cdp(connect_target)
+                contexts = list(getattr(browser, "contexts", []) or [])
+                if not contexts:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                    raise BrowserRuntimeError(
+                        f"No browser context available on attached Chrome session: {connect_target}. "
+                        "Start Chrome with a visible profile and remote debugging enabled."
+                    )
+                self._browser = browser
+                self._owns_browser = False
+                self._context = contexts[0]
+                self._owns_context = False
+                self._page = self._select_attached_page(self._context.pages)
+                if self._page is None:
+                    self._page = self._context.new_page()
+                    self._owns_page = True
+                else:
+                    self._owns_page = False
+                self.cdp_url = connect_target
+                self.attached_to_existing_browser = True
+                if self.start_url and self._is_blank_page_url(self._page.url):
+                    self._page.goto(self.start_url, wait_until="domcontentloaded")
+                return True
+            except Exception as exc:
+                errors.append(f"{endpoint} (connect={connect_target}) -> {exc}")
+
+        require_attach = str(os.getenv("SCREENING_BROWSER_CDP_REQUIRED", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if require_attach:
+            raise BrowserRuntimeError(
+                "Unable to attach to Chrome CDP endpoint. "
+                f"Tried: {', '.join(attempted)}. "
+                f"Errors: {' | '.join(errors)}"
+            )
+
+        # Fall back to launching a managed browser when CDP endpoint is stale
+        # (for example, when Chrome restarts and random remote-debugging ports rotate).
+        self.cdp_url = None
+        self.attached_to_existing_browser = False
+        return False
+
+    def _candidate_cdp_urls(self) -> tuple[str, ...]:
+        candidates: list[str] = []
+
+        def add_candidate(value: Any) -> None:
+            normalized = self._normalize_cdp_url(value)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+
+        add_candidate(self.cdp_url)
+        fallback_ports = os.getenv("SCREENING_BROWSER_FALLBACK_CDP_PORTS", "9222,9223")
+        for token in re.split(r"[,\s]+", str(fallback_ports or "").strip()):
+            if token:
+                add_candidate(token)
+        return tuple(candidates)
+
+    def _resolve_cdp_connect_target(self, endpoint: str) -> str:
+        normalized = self._normalize_cdp_url(endpoint) or endpoint
+        if normalized.startswith(("ws://", "wss://")):
+            return normalized
+        if not normalized.startswith(("http://", "https://")):
+            return normalized
+        discovered_ws = self._discover_cdp_websocket_url(normalized)
+        return discovered_ws or normalized
+
+    def _discover_cdp_websocket_url(self, endpoint: str) -> str | None:
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        base = urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")).rstrip("/")
+        if not base:
+            return None
+        probe_paths = (
+            "/json/version",
+            "/json/version/",
+            "/json",
+            "/json/list",
+        )
+        for path in probe_paths:
+            url = f"{base}{path}"
+            payload = self._http_json(url)
+            ws_url = self._extract_websocket_debugger_url(payload)
+            if ws_url:
+                return ws_url
+        return None
+
+    @staticmethod
+    def _http_json(url: str, *, timeout_seconds: float = 1.5):
+        try:
+            request = urllib_request.Request(url, headers={"Accept": "application/json"})
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                body = response.read().decode("utf-8", errors="replace")
+        except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, ValueError):
+            return None
+        if not body:
+            return None
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _extract_websocket_debugger_url(payload: Any) -> str | None:
+        if isinstance(payload, dict):
+            value = payload.get("webSocketDebuggerUrl")
+            return str(value).strip() if value else None
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("webSocketDebuggerUrl")
+                if value:
+                    return str(value).strip()
+        return None
 
     @property
     def current_url(self) -> str:
@@ -250,6 +371,8 @@ class PlaywrightBrowserRuntime:
         if self._page is None:
             raise BrowserRuntimeError("Browser session not started.")
         target = self._find_resume_content_target()
+        if target is None:
+            target = self._find_resume_dialog_panel_target()
         if target is not None:
             stitched_resume = self._capture_resume_scrollable_panel(target=target)
             if stitched_resume is not None:
@@ -262,7 +385,32 @@ class PlaywrightBrowserRuntime:
         clipped = self._capture_resume_dialog_left_clip()
         if clipped is not None:
             return clipped
-        raise BrowserRuntimeError("No resume content container found for full resume screenshot.")
+        iframe_target = self._find_recommend_resume_iframe_target()
+        if iframe_target is not None:
+            _root, locator, _metrics = iframe_target
+            try:
+                return locator.screenshot(type="png")
+            except Exception:
+                pass
+        if self._is_recommend_page_url(self.current_url) or self._has_recommend_resume_frame():
+            try:
+                active_dialog = self._active_recommend_dialog_locator()
+            except Exception:
+                active_dialog = None
+            if active_dialog is not None:
+                try:
+                    if active_dialog.count() > 0:
+                        return active_dialog.first.screenshot(type="png")
+                except Exception:
+                    pass
+        self._prepare_long_resume_capture()
+        try:
+            try:
+                return self._page.screenshot(type="png", full_page=True)
+            except Exception:
+                return self._page.screenshot(type="png")
+        finally:
+            self._restore_scroll_after_capture()
 
     def _capture_resume_dialog_left_clip(self) -> bytes | None:
         page = self._require_page()
@@ -331,11 +479,23 @@ class PlaywrightBrowserRuntime:
         except Exception:
             return None
         if not clip:
-            return None
+            active_dialog = self._active_recommend_dialog_locator()
+            if active_dialog is None:
+                return None
+            try:
+                return active_dialog.first.screenshot(type="png")
+            except Exception:
+                return None
         try:
             return page.screenshot(type="png", clip=clip)
         except Exception:
-            return None
+            active_dialog = self._active_recommend_dialog_locator()
+            if active_dialog is None:
+                return None
+            try:
+                return active_dialog.first.screenshot(type="png")
+            except Exception:
+                return None
 
     def screenshot_base64(self) -> str:
         return base64.b64encode(self.screenshot_bytes()).decode("utf-8")
@@ -451,36 +611,158 @@ class PlaywrightBrowserRuntime:
                 continue
         return None
 
+    def _wait_for_any_global(self, selectors: Sequence[str], *, timeout_ms: int = 10000) -> str | None:
+        if not selectors:
+            return None
+        page = self._require_page()
+        deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+        while time.monotonic() <= deadline:
+            roots = [page, *self._page_frames(page)]
+            for root in roots:
+                for selector in selectors:
+                    try:
+                        if root.locator(selector).count() > 0:
+                            return selector
+                    except Exception:
+                        continue
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                break
+            try:
+                page.wait_for_timeout(min(250, max(50, remaining_ms)))
+            except Exception:
+                break
+        return None
+
     def goto_search_page(self, selectors: BossSelectors) -> str:
         return self.goto(selectors.search_url)
 
+    def prepare_recommend_login(
+        self,
+        *,
+        login_url: str | None = None,
+        wait_timeout_ms: int = 15000,
+    ) -> dict[str, Any]:
+        if not self.attached_to_existing_browser or not self._is_loopback_cdp_port(9222):
+            return {"opened": False, "waited": False, "reason": "cdp_9222_not_attached"}
+
+        if self._context is None:
+            raise BrowserRuntimeError("Browser context is not ready for recommend login preparation.")
+
+        target_url = login_url or "https://www.zhipin.com/web/user/?ka=header-login"
+        page = None
+        reused_current_page = False
+        try:
+            page = self._context.new_page()
+            self._owns_page = True
+        except Exception:
+            page = self._require_page()
+            reused_current_page = True
+            self._owns_page = False
+
+        self._page = page
+        try:
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            should_navigate = True
+            try:
+                current = str(page.url or "").strip()
+            except Exception:
+                current = ""
+            if current:
+                current_parsed = urlparse(current)
+                target_parsed = urlparse(target_url)
+                should_navigate = not (
+                    current_parsed.scheme == target_parsed.scheme
+                    and current_parsed.netloc == target_parsed.netloc
+                    and current_parsed.path.rstrip("/") == target_parsed.path.rstrip("/")
+                    and current_parsed.query == target_parsed.query
+                )
+            if should_navigate:
+                page.goto(target_url, wait_until="domcontentloaded")
+            page.wait_for_timeout(max(1000, wait_timeout_ms))
+            return {
+                "opened": True,
+                "waited": True,
+                "reused_current_page": reused_current_page,
+                "url": page.url,
+            }
+        except Exception as exc:
+            raise BrowserRuntimeError(f"Failed to prepare recommend login page: {exc}") from exc
+
     def goto_recommend_page(self, selectors: BossSelectors) -> str:
         page = self._require_page()
+        if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+            return self.current_url
         current_url = (self.current_url or "").lower()
         chat_home_url = os.getenv("SCREENING_BOSS_CHAT_URL", "https://www.zhipin.com/web/chat/index")
         if "/web/chat/" not in current_url:
             page.goto(chat_home_url, wait_until="domcontentloaded")
             page.wait_for_timeout(400)
         if self._open_recommend_from_chat_menu(selectors):
+            if self.wait_for_recommend_list_ready(selectors, timeout_ms=8000):
+                return self.current_url
+            if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+                return self.current_url
             return page.url
-        return self.goto(selectors.recommend_url)
+        url = self.goto(selectors.recommend_url)
+        if self.wait_for_recommend_list_ready(selectors, timeout_ms=6000):
+            return url
+        if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+            return self.current_url
+        return url
 
     def is_login_scan_page(self) -> bool:
         page = self._require_page()
         current_url = (self.current_url or "").lower()
-        if "/web/user" not in current_url and "login" not in current_url:
-            return False
         try:
-            body_text = page.locator("body").inner_text()[:2000]
+            body_text = page.locator("body").inner_text()[:3000]
         except Exception:
             return False
+        normalized = body_text.lower()
         markers = (
             "app扫码登录",
             "扫码登录",
             "扫码帮助",
             "验证码登录/注册",
+            "登录/注册",
+            "请先登录",
+            "登录后查看",
         )
-        return any(marker in body_text.lower() for marker in markers)
+        marker_hit = any(marker in normalized for marker in markers)
+        if not marker_hit:
+            return False
+
+        login_url_hint = any(token in current_url for token in ("/web/user", "/login", "login", "register"))
+        if login_url_hint:
+            return True
+
+        # Some anti-bot redirects land on the homepage/login overlay instead of
+        # explicit /login routes. Detect common login containers before waiting.
+        login_selectors = (
+            "div.login-wrap",
+            "div.login-box",
+            "form[action*='login']",
+            "input[type='password']",
+            "input[placeholder*='手机号']",
+            "button:has-text('登录')",
+            "a:has-text('登录')",
+            "text=扫码登录",
+        )
+        for selector in login_selectors:
+            try:
+                if page.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+
+        # Fallback: homepage-like URL with login markers should still trigger a
+        # short manual wait so HR can finish QR scan without automatic retries.
+        if "/web/chat/" not in current_url and "/web/geek/" not in current_url and "/web/boss/" not in current_url:
+            return True
+        return False
 
     def wait_for_login_scan(
         self,
@@ -701,13 +983,23 @@ class PlaywrightBrowserRuntime:
         card_locator = self._locator_for_any(selectors.recommend_candidate_card, scope=scope)
         if card_locator is None:
             card_locator = self._locator_for_any(selectors.candidate_card, scope=scope)
+        try:
+            initial_count = card_locator.count() if card_locator is not None else 0
+        except Exception:
+            initial_count = 0
+        if initial_count <= 0 and self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+            scope = self._resolve_recommend_scope(selectors)
+            card_locator = self._locator_for_any(selectors.recommend_candidate_card, scope=scope)
+            if card_locator is None:
+                card_locator = self._locator_for_any(selectors.candidate_card, scope=scope)
         if card_locator is None:
             return []
 
         self._expand_cards_by_scrolling(card_locator, limit=limit, scope=scope)
         items = []
-        count = min(card_locator.count(), limit)
-        for index in range(count):
+        total_count = card_locator.count()
+        scan_count = min(total_count, max(limit * 6, limit + 8, 12))
+        for index in range(scan_count):
             card = card_locator.nth(index)
             raw_href = self._attribute_from_scope(card, selectors.recommend_candidate_name_link, "href")
             detail_url = None if not raw_href or raw_href.startswith("javascript") else self._absolute_url(raw_href)
@@ -715,6 +1007,28 @@ class PlaywrightBrowserRuntime:
                 full_card_text = card.inner_text().strip()
             except Exception:
                 full_card_text = ""
+            name = self._text_from_scope(card, selectors.candidate_name) or self._text_from_scope(
+                card,
+                selectors.recommend_candidate_name_link,
+            )
+            current_title = self._text_from_scope(card, selectors.candidate_title)
+            current_company = self._text_from_scope(card, selectors.candidate_company)
+            years_experience = self._extract_years(self._text_from_scope(card, selectors.candidate_experience))
+            education_level = self._text_from_scope(card, selectors.candidate_education)
+            location = self._text_from_scope(card, selectors.candidate_location)
+            last_active_time = self._text_from_scope(card, selectors.candidate_active_time)
+            if not self._is_meaningful_recommend_card(
+                full_card_text=full_card_text,
+                detail_url=detail_url,
+                name=name,
+                current_title=current_title,
+                current_company=current_company,
+                years_experience=years_experience,
+                education_level=education_level,
+                location=location,
+                last_active_time=last_active_time,
+            ):
+                continue
             external_id = self._extract_external_id(
                 card,
                 selectors.recommend_candidate_external_id,
@@ -726,19 +1040,51 @@ class PlaywrightBrowserRuntime:
                 {
                     "card_index": index,
                     "external_id": external_id,
-                    "name": self._text_from_scope(card, selectors.candidate_name)
-                    or self._text_from_scope(card, selectors.recommend_candidate_name_link),
-                    "current_title": self._text_from_scope(card, selectors.candidate_title),
-                    "current_company": self._text_from_scope(card, selectors.candidate_company),
-                    "years_experience": self._extract_years(self._text_from_scope(card, selectors.candidate_experience)),
-                    "education_level": self._text_from_scope(card, selectors.candidate_education),
-                    "location": self._text_from_scope(card, selectors.candidate_location),
-                    "last_active_time": self._text_from_scope(card, selectors.candidate_active_time),
+                    "name": name,
+                    "current_title": current_title,
+                    "current_company": current_company,
+                    "years_experience": years_experience,
+                    "education_level": education_level,
+                    "location": location,
+                    "last_active_time": last_active_time,
                     "detail_url": detail_url,
                     "summary_text": full_card_text,
                 }
             )
+            if len(items) >= limit:
+                break
         return items
+
+    @staticmethod
+    def _is_meaningful_recommend_card(
+        *,
+        full_card_text: str | None,
+        detail_url: str | None,
+        name: str | None,
+        current_title: str | None,
+        current_company: str | None,
+        years_experience: float | None,
+        education_level: str | None,
+        location: str | None,
+        last_active_time: str | None,
+    ) -> bool:
+        summary = str(full_card_text or "").strip()
+        if detail_url:
+            return True
+        if any(
+            value not in (None, "")
+            for value in (
+                name,
+                current_title,
+                current_company,
+                years_experience,
+                education_level,
+                location,
+                last_active_time,
+            )
+        ):
+            return True
+        return len(summary) >= 20
 
     def open_candidate_card(self, card: dict[str, Any], selectors: BossSelectors) -> str:
         scope = self._resolve_search_scope(selectors)
@@ -772,41 +1118,387 @@ class PlaywrightBrowserRuntime:
         self.wait_for_any(selectors.detail_ready, timeout_ms=15000)
         return self._require_page().url
 
-    def open_recommend_candidate(self, card: dict[str, Any], selectors: BossSelectors) -> str:
-        scope = self._resolve_recommend_scope(selectors)
-        self._dismiss_blocking_dialogs()
+    def _recommend_detail_signature(self) -> str | None:
+        try:
+            panel_target = self._find_resume_dialog_panel_target()
+        except Exception:
+            panel_target = None
+        if panel_target is not None:
+            try:
+                _root, locator, _metrics = panel_target
+                text = self._cleanup_resume_text(locator.inner_text())
+                if len(text) >= 40:
+                    return text[:1200]
+            except Exception:
+                pass
+        try:
+            active_dialog = self._active_recommend_dialog_locator()
+        except Exception:
+            active_dialog = None
+        if active_dialog is None:
+            return None
+        try:
+            text = self._cleanup_resume_text(active_dialog.first.inner_text())
+        except Exception:
+            return None
+        if len(text) < 40:
+            return None
+        return text[:1200]
+
+    @staticmethod
+    def _is_loading_resume_text(text: str | None) -> bool:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        if "加载中，请稍候" in normalized:
+            return True
+        markers = ("加载中", "请稍候", "loading")
+        return len(normalized) <= 80 and any(marker in normalized for marker in markers)
+
+    def _has_recommend_resume_frame(self) -> bool:
+        page = self._require_page()
+        for frame in self._page_frames(page):
+            frame_url = self._frame_url_value(frame).lower()
+            if "/web/frame/c-resume/" in frame_url or "/web/geek/job-recommend/" in frame_url:
+                return True
+        return False
+
+    def _find_recommend_resume_iframe_target(self) -> tuple[object, object, dict[str, float]] | None:
+        page = self._require_page()
+        iframe_selectors = (
+            "iframe[src*='/web/frame/c-resume/']",
+            "iframe[src*='/web/geek/job-recommend/']",
+        )
+        best: tuple[object, object, dict[str, float]] | None = None
+        best_score = -1.0
+        for root in [page, *self._page_frames(page)]:
+            frame_url = self._frame_url_value(root).lower()
+            for selector in iframe_selectors:
+                try:
+                    locator = root.locator(selector)
+                except Exception:
+                    continue
+                try:
+                    count = min(locator.count(), 4)
+                except Exception:
+                    continue
+                for index in range(count):
+                    candidate = locator.nth(index)
+                    try:
+                        box = candidate.bounding_box()
+                    except Exception:
+                        box = None
+                    width = float((box or {}).get("width") or 0)
+                    height = float((box or {}).get("height") or 0)
+                    if box is not None and width < 120 and height < 120:
+                        continue
+                    try:
+                        src = str(candidate.get_attribute("src") or "").lower()
+                    except Exception:
+                        src = ""
+                    score = width + height
+                    if "/web/frame/c-resume/" in src:
+                        score += 5000
+                    if "/web/geek/job-recommend/" in src:
+                        score += 2500
+                    if "/web/frame/recommend/" in frame_url:
+                        score += 1000
+                    if score > best_score:
+                        left = float((box or {}).get("x") or 0)
+                        top = float((box or {}).get("y") or 0)
+                        metrics = {
+                            "width": width,
+                            "height": height,
+                            "left": left,
+                            "top": top,
+                            "right": left + width,
+                            "bottom": top + height,
+                        }
+                        best = (root, candidate, metrics)
+                        best_score = score
+        return best
+
+    def _recommend_detail_state(self, selectors: BossSelectors) -> dict[str, Any]:
+        try:
+            active_dialog = self._active_recommend_dialog_locator()
+        except Exception:
+            active_dialog = None
+        has_dialog = False
+        if active_dialog is not None:
+            try:
+                has_dialog = active_dialog.count() > 0
+            except Exception:
+                has_dialog = False
+        has_panel = False
+        try:
+            has_panel = self._find_resume_dialog_panel_target() is not None
+        except Exception:
+            has_panel = False
+        has_resume_iframe = False
+        try:
+            has_resume_iframe = self._find_recommend_resume_iframe_target() is not None
+        except Exception:
+            has_resume_iframe = False
+        signature = self._recommend_detail_signature()
+        content_ready = bool(signature) and not self._is_loading_resume_text(signature)
+        if has_resume_iframe:
+            content_ready = True
+        return {
+            "ready_visible": bool(has_dialog or has_panel or has_resume_iframe),
+            "has_dialog": has_dialog,
+            "has_panel": has_panel,
+            "has_resume_frame": self._has_recommend_resume_frame(),
+            "has_resume_iframe": has_resume_iframe,
+            "signature": signature,
+            "content_ready": content_ready,
+        }
+
+    def _recommend_card_locator(self, selectors: BossSelectors, scope: Any):
         card_locator = self._locator_for_any(selectors.recommend_candidate_card, scope=scope)
         if card_locator is None:
             card_locator = self._locator_for_any(selectors.candidate_card, scope=scope)
-        if card_locator is None or card["card_index"] >= card_locator.count():
-            raise BrowserRuntimeError("Recommend candidate card is no longer available on the list page.")
+        return card_locator
 
-        card_scope = card_locator.nth(card["card_index"])
+    def _recommend_card_identity(
+        self,
+        card_scope: Any,
+        selectors: BossSelectors,
+    ) -> dict[str, str | None]:
+        try:
+            summary_text = card_scope.inner_text().strip()
+        except Exception:
+            summary_text = ""
+        name = self._text_from_scope(card_scope, selectors.candidate_name) or self._text_from_scope(
+            card_scope,
+            selectors.recommend_candidate_name_link,
+        )
+        external_id = self._extract_external_id(
+            card_scope,
+            selectors.recommend_candidate_external_id,
+            None,
+            1,
+            fallback_text=summary_text,
+        )
+        return {
+            "external_id": external_id,
+            "name": name,
+            "summary_text": summary_text,
+        }
+
+    def _recommend_card_matches(
+        self,
+        card_scope: Any,
+        selectors: BossSelectors,
+        expected_card: dict[str, Any],
+    ) -> bool:
+        current = self._recommend_card_identity(card_scope, selectors)
+        expected_external_id = str(expected_card.get("external_id") or "").strip()
+        current_external_id = str(current.get("external_id") or "").strip()
+        if (
+            expected_external_id
+            and current_external_id
+            and current_external_id == expected_external_id
+            and not expected_external_id.startswith("playwright-")
+        ):
+            return True
+        expected_name = str(expected_card.get("name") or "").strip()
+        current_name = str(current.get("name") or "").strip()
+        if expected_name and current_name and current_name == expected_name:
+            return True
+        expected_summary = str(expected_card.get("summary_text") or "").strip()
+        current_summary = str(current.get("summary_text") or "").strip()
+        if expected_summary and current_summary:
+            expected_prefix = expected_summary[:120]
+            current_prefix = current_summary[:120]
+            if expected_prefix == current_prefix:
+                return True
+        return False
+
+    def _resolve_recommend_card_scope(self, selectors: BossSelectors, card: dict[str, Any]):
+        scope = self._resolve_recommend_scope(selectors)
+        card_locator = self._recommend_card_locator(selectors, scope)
+        if card_locator is None:
+            return None
+        try:
+            count = card_locator.count()
+        except Exception:
+            count = 0
+        card_index = int(card.get("card_index") or 0)
+        if 0 <= card_index < count:
+            scoped = card_locator.nth(card_index)
+            try:
+                if self._recommend_card_matches(scoped, selectors, card):
+                    return scoped
+            except Exception:
+                return scoped
+        for index in range(min(count, 12)):
+            try:
+                scoped = card_locator.nth(index)
+                if self._recommend_card_matches(scoped, selectors, card):
+                    return scoped
+            except Exception:
+                continue
+        if 0 <= card_index < count:
+            return card_locator.nth(card_index)
+        return None
+
+    @staticmethod
+    def _is_probable_anchor_locator(locator: Any) -> bool:
+        if locator is None:
+            return False
+        try:
+            href = locator.first.get_attribute("href")
+        except Exception:
+            href = None
+        href_value = str(href or "").strip().lower()
+        return bool(href_value and not href_value.startswith("javascript"))
+
+    @staticmethod
+    def _click_locator(locator: Any, *, timeout_ms: int = 5000, position: dict[str, float] | None = None) -> bool:
+        if locator is None:
+            return False
+        click_kwargs: dict[str, Any] = {"timeout": timeout_ms}
+        if position is not None:
+            click_kwargs["position"] = position
+        for force in (False, True):
+            try:
+                if force:
+                    locator.click(force=True, **click_kwargs)
+                else:
+                    locator.click(**click_kwargs)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _click_recommend_resume_hotspot(self, card_scope: Any) -> bool:
+        hotspot_specs = (
+            ((".row.name-wrap", ".name-wrap"), {"x": 20, "y": 10}),
+            ((".name",), {"x": 10, "y": 10}),
+            ((".avatar-wrap",), {"x": 18, "y": 18}),
+            ((".col-2",), {"x": 32, "y": 20}),
+        )
+        for selectors, position in hotspot_specs:
+            locator = self._locator_for_any(selectors, scope=card_scope)
+            if locator is None:
+                continue
+            try:
+                candidate = locator.first
+            except Exception:
+                candidate = locator
+            if self._click_locator(candidate, timeout_ms=5000, position=position):
+                return True
+        for position in ({"x": 160, "y": 40}, {"x": 120, "y": 36}):
+            if self._click_locator(card_scope, timeout_ms=5000, position=position):
+                return True
+        return False
+
+    def open_recommend_candidate(self, card: dict[str, Any], selectors: BossSelectors) -> str:
+        self._dismiss_blocking_dialogs()
+        card_scope = self._resolve_recommend_card_scope(selectors, card)
+        if card_scope is None and self.recover_recommend_list(selectors, timeout_ms=5000):
+            self._dismiss_blocking_dialogs()
+            card_scope = self._resolve_recommend_card_scope(selectors, card)
+        if card_scope is None:
+            try:
+                self.wait_for_recommend_list_ready(selectors, timeout_ms=5000)
+            except Exception:
+                pass
+            self._dismiss_blocking_dialogs()
+            card_scope = self._resolve_recommend_card_scope(selectors, card)
+        if card_scope is None:
+            raise BrowserRuntimeError("Recommend candidate card is no longer available on the list page.")
         link_locator = self._locator_for_any(selectors.recommend_candidate_name_link, scope=card_scope)
         if link_locator is None:
             link_locator = self._locator_for_any(selectors.candidate_link, scope=card_scope)
-        if link_locator is not None:
-            try:
-                link_locator.first.click(timeout=5000)
-            except Exception:
-                self._dismiss_blocking_dialogs()
-                link_locator.first.click(timeout=5000, force=True)
-        else:
-            try:
-                card_scope.click(timeout=5000)
-            except Exception:
-                self._dismiss_blocking_dialogs()
-                card_scope.click(timeout=5000, force=True)
 
-        self._require_page().wait_for_timeout(1200)
-        self._wait_for_any(selectors.recommend_detail_ready + selectors.detail_ready, timeout_ms=15000)
-        return self._require_page().url
+        before_state = self._recommend_detail_state(selectors)
+
+        def detail_opened(timeout_ms: int) -> str:
+            page = self._require_page()
+            deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+            saw_resume_frame = False
+            while time.monotonic() <= deadline:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                wait_slice = min(400, max(50, remaining_ms))
+                ready_hit = self._wait_for_any_global(selectors.recommend_detail_ready, timeout_ms=wait_slice)
+                current_state = self._recommend_detail_state(selectors)
+                if current_state["has_resume_frame"] and not before_state["has_resume_frame"]:
+                    saw_resume_frame = True
+                if current_state.get("has_resume_iframe") and not before_state.get("has_resume_iframe"):
+                    return "opened"
+                if current_state.get("content_ready") and current_state["has_resume_frame"] and not before_state["has_resume_frame"]:
+                    return "opened"
+                if current_state.get("content_ready") and current_state["has_panel"] and not before_state["has_panel"]:
+                    return "opened"
+                if current_state.get("content_ready") and current_state["signature"] and current_state["signature"] != before_state["signature"]:
+                    return "opened"
+                if current_state.get("content_ready") and ready_hit and not before_state["ready_visible"]:
+                    return "opened"
+                if remaining_ms <= 0:
+                    break
+                try:
+                    page.wait_for_timeout(min(200, max(50, remaining_ms)))
+                except Exception:
+                    break
+            if saw_resume_frame:
+                return "resume_frame_pending"
+            return "none"
+
+        def attempt_resume_open(current_card_scope: Any) -> bool:
+            if self._click_recommend_resume_hotspot(current_card_scope):
+                self._require_page().wait_for_timeout(900)
+                result = detail_opened(timeout_ms=3500)
+                if result == "opened":
+                    return True
+                if result == "resume_frame_pending":
+                    self._require_page().wait_for_timeout(1200)
+                    return detail_opened(timeout_ms=5000) == "opened"
+            return False
+
+        link_clicked = False
+        if self._is_probable_anchor_locator(link_locator):
+            link_clicked = False
+            try:
+                self._dismiss_blocking_dialogs()
+                link_locator.first.click(timeout=5000)
+                link_clicked = True
+            except Exception:
+                self._dismiss_blocking_dialogs()
+                try:
+                    link_locator.first.click(timeout=5000, force=True)
+                    link_clicked = True
+                except Exception:
+                    link_locator = None
+
+        if link_locator is not None and link_clicked:
+            self._require_page().wait_for_timeout(900)
+            if detail_opened(timeout_ms=2500) == "opened":
+                return self._require_page().url
+            raise BrowserRuntimeError("Recommend candidate detail did not open from the current resume link.")
+
+        if attempt_resume_open(card_scope):
+            return self._require_page().url
+
+        if self.recover_recommend_list(selectors, timeout_ms=5000):
+            self._dismiss_blocking_dialogs()
+            card_scope = self._resolve_recommend_card_scope(selectors, card)
+            if card_scope is not None and attempt_resume_open(card_scope):
+                return self._require_page().url
+
+        card_clicked = self._click_locator(card_scope, timeout_ms=5000)
+        if not card_clicked and card_scope is not None:
+            card_clicked = self._click_locator(card_scope, timeout_ms=5000, position={"x": 160, "y": 40})
+        if card_clicked:
+            self._require_page().wait_for_timeout(1200)
+            if detail_opened(timeout_ms=15000) == "opened":
+                return self._require_page().url
+            raise BrowserRuntimeError("Recommend candidate detail did not open from the current list card.")
+        raise BrowserRuntimeError("Recommend candidate detail did not open from the current list card.")
 
     def download_resume(self, selectors: BossSelectors, external_id: str | None = None, *, timeout_ms: int = 12000) -> dict[str, Any]:
         page = self._require_page()
-        active_dialog = self._locator_for_any_global(
-            ("div.dialog-wrap.active", "div[data-type='boss-dialog'].active")
-        )
+        active_dialog = self._active_recommend_dialog_locator()
         locator = None
         if active_dialog is not None:
             try:
@@ -835,9 +1527,7 @@ class PlaywrightBrowserRuntime:
             return {"downloaded": False, "reason": str(exc), "resume_path": None}
 
     def click_recommend_greet(self, selectors: BossSelectors) -> dict[str, Any]:
-        active_dialog = self._locator_for_any_global(
-            ("div.dialog-wrap.active", "div[data-type='boss-dialog'].active")
-        )
+        active_dialog = self._active_recommend_dialog_locator()
         locator = None
         if active_dialog is not None:
             try:
@@ -866,23 +1556,23 @@ class PlaywrightBrowserRuntime:
                     return True
                 except Exception:
                     pass
+            if not self._has_active_recommend_dialog():
+                return True
             try:
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(300)
             except Exception:
                 return False
-            if page.locator("div.dialog-wrap.active, div[data-type='boss-dialog'].active").count() == 0:
+            if not self._has_active_recommend_dialog():
                 return True
         return False
 
     def extract_recommend_detail_payload(self, selectors: BossSelectors) -> dict[str, Any]:
-        active_dialog = self._locator_for_any_global(
-            ("div.dialog-wrap.active", "div[data-type='boss-dialog'].active")
-        )
+        active_dialog = self._active_recommend_dialog_locator()
         if active_dialog is not None:
             try:
                 text = active_dialog.first.inner_text().strip()
-                if text:
+                if text and not self._is_loading_resume_text(text):
                     return {"detail_url": self.current_url, "page_text": text}
             except Exception:
                 pass
@@ -949,6 +1639,49 @@ class PlaywrightBrowserRuntime:
             return True
         except Exception:
             return False
+
+    def go_to_next_recommend_page(self, selectors: BossSelectors) -> bool:
+        scope = self._resolve_recommend_scope(selectors)
+        locator = self._locator_for_any(selectors.next_page, scope=scope)
+        if locator is None:
+            return False
+        button = locator.first
+        try:
+            disabled = (button.get_attribute("disabled") is not None) or (
+                (button.get_attribute("aria-disabled") or "").lower() == "true"
+            )
+            classes = (button.get_attribute("class") or "").lower()
+            if disabled or "disabled" in classes:
+                return False
+            button.click()
+            self._wait_for_any(
+                selectors.recommend_list_ready + selectors.list_ready,
+                timeout_ms=15000,
+                scope=scope,
+            )
+            return True
+        except Exception:
+            return False
+
+    def wait_for_recommend_list_ready(self, selectors: BossSelectors, *, timeout_ms: int = 10000) -> dict[str, Any] | None:
+        ready = self._wait_for_recommend_cards_ready(selectors, timeout_ms=timeout_ms)
+        if ready is not None:
+            return ready
+        if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+            return self._wait_for_recommend_cards_ready(selectors, timeout_ms=max(1000, timeout_ms // 2))
+        return None
+
+    def recover_recommend_list(self, selectors: BossSelectors, *, timeout_ms: int = 5000) -> bool:
+        try:
+            page = self._require_page()
+            if not page.is_closed():
+                if self.wait_for_recommend_list_ready(selectors, timeout_ms=timeout_ms):
+                    return True
+        except Exception:
+            pass
+        if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=False):
+            return bool(self.wait_for_recommend_list_ready(selectors, timeout_ms=timeout_ms))
+        return False
 
     def text_content_any(self, selectors: Sequence[str], *, scope=None) -> str | None:
         locator = self._locator_for_any(selectors, scope=scope)
@@ -1134,6 +1867,13 @@ class PlaywrightBrowserRuntime:
             return f"http://127.0.0.1:{text}"
         return text
 
+    def _is_loopback_cdp_port(self, expected_port: int) -> bool:
+        normalized = self._normalize_cdp_url(self.cdp_url)
+        if not normalized:
+            return False
+        parsed = urlparse(normalized)
+        return parsed.hostname in {"127.0.0.1", "::1", "localhost"} and parsed.port == expected_port
+
     @staticmethod
     def _is_blank_page_url(url: str | None) -> bool:
         normalized = (url or "").strip().lower()
@@ -1178,6 +1918,181 @@ class PlaywrightBrowserRuntime:
                 return page
         return None
 
+    @staticmethod
+    def _page_url_value(page: Any) -> str:
+        try:
+            url = page.url
+            return str(url() if callable(url) else url or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _frame_name_value(frame: Any) -> str:
+        try:
+            name = frame.name
+            return str(name() if callable(name) else name or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _frame_url_value(frame: Any) -> str:
+        try:
+            url = frame.url
+            return str(url() if callable(url) else url or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _page_frames(page: Any) -> list[Any]:
+        try:
+            frames = page.frames
+            if callable(frames):
+                frames = frames()
+            return list(frames or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _is_recommend_page_url(url: str | None) -> bool:
+        return "/web/chat/recommend" in str(url or "").lower()
+
+    def _adopt_page(self, page: Any, *, owns_page: bool = False, close_previous_owned: bool = False) -> None:
+        previous_page = self._page
+        previous_owned = self._owns_page
+        self._page = page
+        self._owns_page = owns_page
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        if close_previous_owned and previous_owned and previous_page is not None and previous_page is not page:
+            try:
+                previous_page.close()
+            except Exception:
+                pass
+
+    def _recommend_scope_info(self, scope: Any) -> dict[str, Any]:
+        frame_name = self._frame_name_value(scope)
+        frame_url = self._frame_url_value(scope)
+        if not frame_url:
+            frame_url = self._page_url_value(scope)
+        info: dict[str, Any] = {}
+        if frame_name:
+            info["frame_name"] = frame_name
+        if frame_url:
+            info["frame_url"] = frame_url
+        return info
+
+    def _recommend_card_count_for_scope(self, selectors: BossSelectors, scope: Any) -> int:
+        try:
+            locator = self._locator_for_any(selectors.recommend_candidate_card, scope=scope)
+            if locator is None:
+                locator = self._locator_for_any(selectors.candidate_card, scope=scope)
+            if locator is None:
+                return 0
+            return int(locator.count())
+        except Exception:
+            return 0
+
+    def _wait_for_recommend_cards_ready(
+        self,
+        selectors: BossSelectors,
+        *,
+        timeout_ms: int = 10000,
+    ) -> dict[str, Any] | None:
+        page = self._require_page()
+        deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+        while time.monotonic() <= deadline:
+            remaining_ms = max(250, int((deadline - time.monotonic()) * 1000))
+            scope = self._resolve_recommend_scope(
+                selectors,
+                timeout_ms=min(1000, max(250, remaining_ms)),
+            )
+            matched = self._wait_for_any(
+                selectors.recommend_list_ready,
+                timeout_ms=min(1000, max(250, remaining_ms)),
+                scope=scope,
+            )
+            if matched is not None:
+                card_count = self._recommend_card_count_for_scope(selectors, scope)
+                if card_count > 0:
+                    return {
+                        "ready_selector": matched,
+                        "card_count": card_count,
+                        **self._recommend_scope_info(scope),
+                    }
+            if remaining_ms <= 250:
+                break
+            try:
+                page.wait_for_timeout(min(250, remaining_ms))
+            except Exception:
+                break
+        return None
+
+    def _recommend_card_count_on_page(
+        self,
+        page: Any,
+        selectors: BossSelectors,
+        *,
+        timeout_ms: int = 2000,
+    ) -> int:
+        previous_page = self._page
+        previous_owned = self._owns_page
+        try:
+            self._page = page
+            self._owns_page = False
+            scope = self._resolve_scope(
+                selectors.recommend_frame_name,
+                selectors.recommend_frame_url_contains,
+                page=page,
+                timeout_ms=timeout_ms,
+            )
+            return self._recommend_card_count_for_scope(selectors, scope)
+        except Exception:
+            return 0
+        finally:
+            self._page = previous_page
+            self._owns_page = previous_owned
+
+    def _find_existing_recommend_page(self, selectors: BossSelectors, *, min_cards: int = 1) -> Any | None:
+        if self._context is None:
+            return None
+        pages = list(getattr(self._context, "pages", []) or [])
+        if not pages:
+            return None
+
+        current_page = self._page
+        ordered_pages = [page for page in reversed(pages) if page is not current_page]
+        if current_page is not None:
+            ordered_pages.append(current_page)
+
+        fallback_page = None
+        for page in ordered_pages:
+            url = self._page_url_value(page)
+            if self._is_blank_page_url(url) or not self._is_recommend_page_url(url):
+                continue
+            if min_cards <= 0:
+                return page
+            card_count = self._recommend_card_count_on_page(page, selectors, timeout_ms=1500)
+            if card_count >= min_cards:
+                return page
+            if fallback_page is None:
+                fallback_page = page
+        return fallback_page if min_cards <= 0 else None
+
+    def _reuse_existing_recommend_page(
+        self,
+        selectors: BossSelectors,
+        *,
+        min_cards: int = 1,
+        close_previous_owned: bool = False,
+    ) -> bool:
+        page = self._find_existing_recommend_page(selectors, min_cards=min_cards)
+        if page is None or page is self._page:
+            return False
+        self._adopt_page(page, owns_page=False, close_previous_owned=close_previous_owned)
+        return True
+
     def _require_page(self):
         if self._page is None:
             raise BrowserRuntimeError("Browser session not started.")
@@ -1192,22 +2107,62 @@ class PlaywrightBrowserRuntime:
             path = Path(__file__).resolve().parents[2] / path
         return path if path.exists() else None
 
-    def _resolve_search_scope(self, selectors: BossSelectors):
-        return self._resolve_scope(selectors.search_frame_name, selectors.search_frame_url_contains)
+    def _resolve_search_scope(self, selectors: BossSelectors, **kwargs):
+        return self._resolve_scope(selectors.search_frame_name, selectors.search_frame_url_contains, **kwargs)
 
-    def _resolve_recommend_scope(self, selectors: BossSelectors):
-        return self._resolve_scope(selectors.recommend_frame_name, selectors.recommend_frame_url_contains)
+    def _resolve_recommend_scope(self, selectors: BossSelectors, **kwargs):
+        return self._resolve_scope(selectors.recommend_frame_name, selectors.recommend_frame_url_contains, **kwargs)
 
-    def _resolve_scope(self, frame_name: str | None, frame_url_contains: str | None):
-        page = self._require_page()
-        for _ in range(60):
-            for frame in page.frames:
-                if frame_name and frame.name == frame_name:
+    def _resolve_scope(
+        self,
+        frame_name: str | None,
+        frame_url_contains: str | None,
+        *,
+        page=None,
+        timeout_ms: int = 15000,
+    ):
+        root_page = page or self._require_page()
+        attempts = max(1, timeout_ms // 250)
+        for _ in range(attempts):
+            for frame in self._page_frames(root_page):
+                frame_name_value = self._frame_name_value(frame)
+                frame_url_value = self._frame_url_value(frame)
+                if frame_name and frame_name_value == frame_name:
                     return frame
-                if frame_url_contains and frame_url_contains in frame.url:
+                if frame_url_contains and frame_url_contains in frame_url_value:
                     return frame
-            page.wait_for_timeout(250)
-        return page
+            iframe_frame = self._resolve_iframe_scope(root_page, frame_name, frame_url_contains)
+            if iframe_frame is not None:
+                return iframe_frame
+            try:
+                root_page.wait_for_timeout(250)
+            except Exception:
+                break
+        return root_page
+
+    def _resolve_iframe_scope(self, page: Any, frame_name: str | None, frame_url_contains: str | None):
+        iframe_selectors: list[str] = []
+        if frame_name:
+            iframe_selectors.append(f'iframe[name="{frame_name}"]')
+        if frame_url_contains:
+            iframe_selectors.append(f'iframe[src*="{frame_url_contains}"]')
+        for selector in iframe_selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+            except Exception:
+                continue
+            for index in range(min(count, 3)):
+                try:
+                    handle = locator.nth(index).element_handle(timeout=1000)
+                    if handle is None:
+                        continue
+                    frame = handle.content_frame()
+                    if frame is not None:
+                        return frame
+                except Exception:
+                    continue
+        return None
 
     def _locator_for_any(self, selectors: Sequence[str], *, scope=None):
         root = scope or self._require_page()
@@ -1222,12 +2177,32 @@ class PlaywrightBrowserRuntime:
 
     def _locator_for_any_global(self, selectors: Sequence[str]):
         page = self._require_page()
-        roots = [page, *page.frames]
+        roots = [page, *self._page_frames(page)]
         for root in roots:
             locator = self._locator_for_any(selectors, scope=root)
             if locator is not None:
                 return locator
         return None
+
+    @staticmethod
+    def _recommend_dialog_selectors() -> tuple[str, ...]:
+        return (
+            "div.dialog-wrap.active",
+            "div[data-type='boss-dialog'].active",
+            "[role='dialog']",
+        )
+
+    def _active_recommend_dialog_locator(self):
+        return self._locator_for_any_global(self._recommend_dialog_selectors())
+
+    def _has_active_recommend_dialog(self) -> bool:
+        locator = self._active_recommend_dialog_locator()
+        if locator is None:
+            return False
+        try:
+            return locator.count() > 0
+        except Exception:
+            return False
 
     def _expand_cards_by_scrolling(self, card_locator, *, limit: int, scope=None) -> int:
         """
@@ -2002,6 +2977,9 @@ class PlaywrightBrowserRuntime:
         dynamic_target = self._find_dynamic_resume_target(roots)
         if dynamic_target is not None:
             return dynamic_target
+        dialog_target = self._find_resume_dialog_panel_target()
+        if dialog_target is not None:
+            return dialog_target
         best: tuple[object, object, dict[str, float]] | None = None
         best_score = -1.0
         for root in roots:
@@ -2072,6 +3050,103 @@ class PlaywrightBrowserRuntime:
                         best = (root, candidate, metrics)
                         best_score = score
         return best
+
+    def _find_resume_dialog_panel_target(self) -> tuple[object, object, dict[str, float]] | None:
+        active_dialog = self._active_recommend_dialog_locator()
+        if active_dialog is None:
+            return None
+        dialog = active_dialog.first
+        marker = "[data-hrclaw-dialog-resume-panel='1']"
+        try:
+            result = dialog.evaluate(
+                """
+                ({marker, positiveMarkers, negativeMarkers}) => {
+                  dialog.querySelectorAll(marker).forEach((el) => {
+                    el.removeAttribute('data-hrclaw-dialog-resume-panel');
+                  });
+                  const dialogRect = dialog.getBoundingClientRect();
+                  const dialogWidth = dialogRect.width || 0;
+                  const dialogHeight = dialogRect.height || 0;
+                  if (dialogWidth < 420 || dialogHeight < 180) {
+                    return null;
+                  }
+                  const leftBoundary = dialogWidth * 0.04;
+                  const rightBoundary = dialogWidth * 0.58;
+                  let best = null;
+                  let bestScore = -Infinity;
+                  for (const el of dialog.querySelectorAll('*')) {
+                    if (!(el instanceof HTMLElement)) continue;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width < 320 || rect.height < 120) continue;
+                    const localLeft = rect.left - dialogRect.left;
+                    const localRight = rect.right - dialogRect.left;
+                    const centerX = localLeft + rect.width / 2;
+                    if (localLeft < leftBoundary - 40) continue;
+                    if (centerX > rightBoundary) continue;
+                    if (localRight > dialogWidth * 0.7) continue;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) continue;
+                    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (text.length < 80) continue;
+                    let score = text.length + rect.width * 1.8 + rect.height;
+                    if (el.scrollHeight > el.clientHeight + 40) score += 22000;
+                    if (rect.width > dialogWidth * 0.62) score -= 18000;
+                    if (localLeft >= leftBoundary && localLeft <= dialogWidth * 0.32) score += 7000;
+                    if (centerX <= dialogWidth * 0.36) score += 6000;
+                    const classId = `${el.className || ''} ${el.id || ''}`.toLowerCase();
+                    if (classId.includes('iboss-left')) score += 22000;
+                    if (classId.includes('resume-content') || classId.includes('geek-resume-wrap')) score += 9000;
+                    if (classId.includes('resume-detail-wrap')) score -= 9000;
+                    if (classId.includes('card-inner') || classId.includes('card-content')) score -= 16000;
+                    if (text.includes('经历概览')) score -= 45000;
+                    if (text.includes('继续沟通') || text.includes('打招呼')) score -= 14000;
+                    for (const markerText of positiveMarkers) {
+                      if (text.includes(markerText)) score += 2500;
+                    }
+                    for (const markerText of negativeMarkers) {
+                      if (text.includes(markerText)) score -= 22000;
+                    }
+                    if (/\\b\\d{2}岁\\b/.test(text)) score += 4500;
+                    if (/(本科|硕士|博士|大专)/.test(text)) score += 3000;
+                    if (/(工作经历|项目经历|最近关注|期望职位)/.test(text)) score += 3500;
+                    if (score > bestScore) {
+                      best = el;
+                      bestScore = score;
+                    }
+                  }
+                  if (!best) return null;
+                  best.setAttribute('data-hrclaw-dialog-resume-panel', '1');
+                  const rect = best.getBoundingClientRect();
+                  const style = window.getComputedStyle(best);
+                  return {
+                    width: rect.width || 0,
+                    height: rect.height || 0,
+                    left: rect.left || 0,
+                    right: rect.right || 0,
+                    client_height: best.clientHeight || 0,
+                    scroll_height: best.scrollHeight || 0,
+                    overflow_y: style.overflowY || '',
+                    overflow: style.overflow || '',
+                  };
+                }
+                """,
+                {
+                    "marker": marker,
+                    "positiveMarkers": list(_RESUME_POSITIVE_MARKERS),
+                    "negativeMarkers": list(_RESUME_NEGATIVE_MARKERS),
+                },
+            )
+        except Exception:
+            return None
+        if not result:
+            return None
+        try:
+            locator = dialog.locator(marker)
+            if locator.count() == 0:
+                return None
+            return (self._require_page(), locator.first, result)
+        except Exception:
+            return None
 
     def _find_dynamic_resume_target(self, roots) -> tuple[object, object, dict[str, float]] | None:
         marker = "[data-hrclaw-resume-target='1']"

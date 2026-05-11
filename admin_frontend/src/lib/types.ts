@@ -187,6 +187,12 @@ export interface HrUser {
   display_name?: string;
   role: "admin" | "hr";
   active: boolean;
+  default_scorecard_id?: string | null;
+  email_ingest_enabled?: boolean;
+  email_ingest_interval_minutes?: number;
+  email_ingest_directory?: string | null;
+  email_ingest_next_run_at?: string | null;
+  email_ingest_last_run_at?: string | null;
   notes?: string;
   last_login_at?: string | null;
   system_managed?: boolean;
@@ -194,4 +200,26 @@ export interface HrUser {
   updated_by?: string;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface EmailIngestRecord {
+  id: string;
+  user_id: string;
+  source: string;
+  source_date: string;
+  file_name: string;
+  file_path: string;
+  file_sha1: string;
+  file_size?: number;
+  status: string;
+  retry_count?: number;
+  error?: string | null;
+  scorecard_id?: string | null;
+  task_id?: string | null;
+  batch_id?: string | null;
+  candidate_id?: string | null;
+  decision?: string | null;
+  total_score?: number | null;
+  updated_at?: string | null;
+  created_at?: string | null;
 }

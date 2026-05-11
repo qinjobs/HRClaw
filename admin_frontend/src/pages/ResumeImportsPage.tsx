@@ -181,7 +181,6 @@ export function ResumeImportsPage() {
       username={bootstrap.username}
       userRole={bootstrap.userRole}
       title="简历导入"
-      subtitle="把批量导入、OCR 解析、自动评分和批次回看单独收敛成一页，方便 HR 在同一视图里完成筛选闭环。"
     >
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatTile label="可导入评分卡" value={importableScorecards.length} hint="仅展示支持简历导入的 JD 卡" />
@@ -401,26 +400,19 @@ export function ResumeImportsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>候选人 / 文件</TableHead>
+                    <TableHead>候选人</TableHead>
                     <TableHead>命中项</TableHead>
                     <TableHead className="w-[160px]">评分</TableHead>
                     <TableHead>筛选结论</TableHead>
-                    <TableHead className="w-[140px] text-right">详情</TableHead>
+                    <TableHead className="w-[210px] text-right">详情</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {batchResults.map((item) => (
                     <TableRow key={`${item.resume_profile_id}-${item.filename}`}>
                       <TableCell>
-                        <div className="space-y-2">
-                          <div className="text-base font-semibold tracking-[-0.03em] text-slate-950">
-                            {item.extracted_name || "未识别姓名"}
-                          </div>
-                          <div className="text-sm leading-6 text-slate-500">
-                            {item.filename || "-"}
-                            <br />
-                            {item.location || "-"} · {item.parse_status || "-"}
-                          </div>
+                        <div className="text-base font-semibold tracking-[-0.03em] text-slate-950">
+                          {item.extracted_name || "未识别姓名"}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -444,8 +436,10 @@ export function ResumeImportsPage() {
                         <div className="text-[28px] font-semibold tracking-[-0.05em] text-slate-950">
                           {formatScore(item.total_score)}
                         </div>
-                        <div className="mt-1 text-sm text-slate-500">
-                          {item.years_experience || "-"} 年 · {item.education_level || "-"}
+                        <div className="mt-1 text-sm leading-6 text-slate-500">
+                          工作年限：{item.years_experience ?? "-"} 年
+                          <br />
+                          学历：{item.education_level || "-"}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -456,14 +450,24 @@ export function ResumeImportsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         {item.resume_profile_id ? (
-                          <a
-                            className="inline-flex rounded-full border border-black/[0.08] bg-black/[0.02] px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-black/[0.04] hover:text-slate-950"
-                            href={`/api/v3/candidates/${encodeURIComponent(item.resume_profile_id)}/search-profile`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Profile JSON
-                          </a>
+                          <div className="inline-flex flex-col items-end gap-2">
+                            <a
+                              className="inline-flex rounded-full border border-black/[0.08] bg-black/[0.02] px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-black/[0.04] hover:text-slate-950"
+                              href={`/api/v3/candidates/${encodeURIComponent(item.resume_profile_id)}/resume-full`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              完整简历
+                            </a>
+                            <a
+                              className="inline-flex rounded-full border border-black/[0.08] bg-black/[0.02] px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-black/[0.04] hover:text-slate-950"
+                              href={`/api/v3/candidates/${encodeURIComponent(item.resume_profile_id)}/resume-markdown`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              完整MARKDOWN
+                            </a>
+                          </div>
                         ) : (
                           <span className="text-sm text-slate-400">无 Profile</span>
                         )}

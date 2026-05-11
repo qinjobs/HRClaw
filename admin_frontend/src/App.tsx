@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { getBootstrap } from "@/lib/bootstrap";
 import { ChecklistPage } from "@/pages/ChecklistPage";
+import { EmailIngestPage } from "@/pages/EmailIngestPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { Phase2Page } from "@/pages/Phase2Page";
@@ -26,6 +27,7 @@ function AppRoutes() {
       <Route path="/hr/checklist" element={<ChecklistPage />} />
       <Route path="/hr/phase2" element={<Phase2Page />} />
       <Route path="/hr/resume-imports" element={<ResumeImportsPage />} />
+      <Route path="/hr/email-ingest" element={<EmailIngestPage />} />
       <Route path="/hr/users" element={<UsersPage />} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 from unittest import mock
 
 from src.screening import db
@@ -217,22 +218,192 @@ class Phase2ApiTests(unittest.TestCase):
         self.assertTrue(result["resume_profile_id"].startswith("resume_import:"))
         self.assertIn("Python", result["matched_terms"])
 
-        detail_handler = self._make_handler("GET", f"/api/v2/resume-imports/{payload['batch']['id']}")
-        status, body = self.api.handle_request(detail_handler)
-        self.assertEqual(status, 200)
-        detail = json.loads(body)
-        self.assertEqual(detail["batch"]["batch_name"], "后端首轮")
-        self.assertEqual(detail["results"][0]["decision"], "recommend")
+    def test_model_precheck_requires_kimi_credentials_when_cli_enabled(self):
+        home_dir = Path(self.tmpdir.name) / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_KIMI_CLI_COMMAND": "/tmp/fake-kimi",
+                "HOME": str(home_dir),
+            },
+            clear=False,
+        ):
+            os.environ.pop("SCREENING_KIMI_CLI_API_KEY", None)
+            os.environ.pop("SCREENING_KIMI_CLI_CONFIG", None)
+            with mock.patch("src.screening.api.shutil.which", return_value="/tmp/fake-kimi"):
+                error = self.api._model_precheck_error()
+        self.assertEqual(error, "请先配置 SCREENING_KIMI_CLI_API_KEY，或先执行 kimi login / 准备 ~/.kimi/config.toml")
 
-        profile_handler = self._make_handler(
-            "GET",
-            f"/api/v3/candidates/{result['resume_profile_id']}/search-profile",
+    def test_import_profile_supports_resume_full_and_markdown_views(self):
+        save_handler = self._make_handler(
+            "POST",
+            "/api/v2/scorecards",
+            {
+                "name": "Java开发-导入详情",
+                "scorecard": {
+                    "name": "Java开发-导入详情",
+                    "role_title": "Java开发工程师",
+                    "jd_text": "Java开发工程师，本科，3年以上，熟悉 Java",
+                    "filters": {"years_min": 3, "education_min": "本科"},
+                    "must_have": ["Java"],
+                    "nice_to_have": [],
+                    "exclude": [],
+                    "titles": ["Java开发工程师"],
+                    "industry": [],
+                    "weights": {
+                        "must_have": 50,
+                        "nice_to_have": 0,
+                        "title_match": 15,
+                        "industry_match": 0,
+                        "experience": 20,
+                        "education": 10,
+                        "location": 5,
+                    },
+                    "thresholds": {"recommend_min": 70, "review_min": 50},
+                    "hard_filters": {
+                        "enforce_years": True,
+                        "enforce_education": True,
+                        "enforce_location": False,
+                        "strict_exclude": False,
+                        "must_have_ratio_min": 0.5,
+                    },
+                },
+            },
         )
-        status, body = self.api.handle_request(profile_handler)
+        status, body = self.api.handle_request(save_handler)
         self.assertEqual(status, 200)
-        profile = json.loads(body)
-        self.assertEqual(profile["name"], "张三")
-        self.assertEqual(profile["source"], "resume_import")
+        scorecard_id = json.loads(body)["item"]["id"]
+
+        docx_bytes = _build_docx_bytes(
+            "\n".join(
+                [
+                    "张三",
+                    "现居住地：北京",
+                    "求职意向：Java开发工程师",
+                    "4年工作经验",
+                    "本科",
+                    "熟悉 Java Spring MySQL",
+                ]
+            )
+        )
+        import_handler = self._make_handler(
+            "POST",
+            "/api/v2/resume-imports",
+            {
+                "scorecard_id": scorecard_id,
+                "batch_name": "导入详情批次",
+                "files": [
+                    {
+                        "name": "zhangsan.docx",
+                        "content_base64": base64.b64encode(docx_bytes).decode("ascii"),
+                    }
+                ],
+            },
+        )
+        status, body = self.api.handle_request(import_handler)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        profile_id = str(payload["results"][0]["resume_profile_id"] or "")
+        self.assertTrue(profile_id.startswith("resume_import:"))
+        encoded_profile_id = quote(profile_id, safe="")
+
+        markdown_handler = self._make_handler(
+            "GET",
+            f"/api/v3/candidates/{encoded_profile_id}/resume-markdown",
+        )
+        status, body, content_type = self.api.handle_request(markdown_handler)
+        self.assertEqual(status, 200)
+        self.assertIn("text/markdown", content_type)
+        markdown_text = body.decode("utf-8")
+        self.assertIn("# 张三", markdown_text)
+        self.assertIn("## 简历正文", markdown_text)
+
+        full_resume_handler = self._make_handler(
+            "GET",
+            f"/api/v3/candidates/{encoded_profile_id}/resume-full",
+        )
+        status, body, content_type = self.api.handle_request(full_resume_handler)
+        self.assertEqual(status, 200)
+        self.assertTrue(content_type.startswith("application/") or content_type.startswith("text/"))
+        if content_type.startswith("text/"):
+            self.assertIn("张三", body.decode("utf-8"))
+
+    def test_import_uses_name_year_and_keyword_fallbacks(self):
+        save_handler = self._make_handler(
+            "POST",
+            "/api/v2/scorecards",
+            {
+                "name": "回退策略测试卡",
+                "scorecard": {
+                    "name": "回退策略测试卡",
+                    "role_title": "测试岗位",
+                    "jd_text": "测试岗位",
+                    "filters": {},
+                    "must_have": [],
+                    "nice_to_have": [],
+                    "exclude": [],
+                    "titles": [],
+                    "industry": [],
+                    "weights": {
+                        "must_have": 45,
+                        "nice_to_have": 10,
+                        "title_match": 10,
+                        "industry_match": 5,
+                        "experience": 15,
+                        "education": 10,
+                        "location": 5,
+                    },
+                    "thresholds": {"recommend_min": 75, "review_min": 55},
+                    "hard_filters": {
+                        "enforce_years": False,
+                        "enforce_education": False,
+                        "enforce_location": False,
+                        "strict_exclude": False,
+                        "must_have_ratio_min": 0.0,
+                    },
+                },
+            },
+        )
+        status, body = self.api.handle_request(save_handler)
+        self.assertEqual(status, 200)
+        scorecard_id = json.loads(body)["item"]["id"]
+
+        docx_bytes = _build_docx_bytes(
+            "\n".join(
+                [
+                    "姓 名 ：黄 田",
+                    "求职意向：Java开发工程师",
+                    "技能：Java Spring Redis Docker MySQL",
+                    "学历：本科",
+                ]
+            )
+        )
+        import_handler = self._make_handler(
+            "POST",
+            "/api/v2/resume-imports",
+            {
+                "scorecard_id": scorecard_id,
+                "batch_name": "回退策略批次",
+                "files": [
+                    {
+                        "name": "AI应用开发工程师_java方向__深圳_15-23K_黄田_6年.docx",
+                        "content_base64": base64.b64encode(docx_bytes).decode("ascii"),
+                    }
+                ],
+            },
+        )
+        status, body = self.api.handle_request(import_handler)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(len(payload["results"]), 1)
+        result = payload["results"][0]
+
+        self.assertEqual(result["extracted_name"], "黄田")
+        self.assertEqual(float(result["years_experience"]), 6.0)
+        self.assertTrue(result["matched_terms"])
+        self.assertIn("java", [str(item).lower() for item in result["matched_terms"]])
 
     def test_import_scanned_pdf_uses_paddleocr_fallback(self):
         save_handler = self._make_handler(

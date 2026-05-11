@@ -15,11 +15,17 @@ class FakeRecommendRuntime:
         self.session_id = "recommend-session"
         self.current_url = "https://www.zhipin.com/web/chat/recommend"
         self.opened_ids = []
+        self.events = []
         self.greet_clicks = 0
+        self.next_page_calls = 0
+        self.recover_recommend_list_calls = 0
         self.login_scan_active = False
         self.login_scan_wait_calls = []
         self.manual_verification_active = False
         self.manual_verification_wait_calls = []
+        self.prepare_recommend_login_calls = []
+        self.collect_recommend_cards_calls = 0
+        self.close_recommend_detail_results = [True]
         self.cards = [
             {
                 "external_id": "recommend-001",
@@ -45,17 +51,44 @@ class FakeRecommendRuntime:
         self.tmpdir.cleanup()
 
     def goto_recommend_page(self, selectors):
+        self.events.append("goto_recommend_page")
         self.current_url = selectors.recommend_url
         return self.current_url
+
+    def prepare_recommend_login(self, *, login_url=None, wait_timeout_ms=15000):
+        self.events.append("prepare_recommend_login")
+        self.prepare_recommend_login_calls.append((login_url, wait_timeout_ms))
+        self.current_url = login_url or "https://www.zhipin.com/web/user/?ka=header-login"
+        return {"opened": True, "waited": True, "url": self.current_url}
 
     def wait_for_any(self, selectors, timeout_ms=0):
         return selectors[0] if selectors else None
 
+    def wait_for_recommend_list_ready(self, selectors, timeout_ms=10000):
+        return {
+            "ready_selector": ".card-list",
+            "frame_name": "recommendFrame",
+            "frame_url": "https://www.zhipin.com/web/frame/recommend/mock",
+            "card_count": len(self.cards),
+        }
+
     def collect_recommend_cards(self, selectors, limit):
-        return self.cards[:limit]
+        self.collect_recommend_cards_calls += 1
+        items = []
+        for index, card in enumerate(self.cards[:limit]):
+            cloned = dict(card)
+            cloned.setdefault("card_index", index)
+            items.append(cloned)
+        return items
 
     def go_to_next_page(self, selectors):
+        self.next_page_calls += 1
         return False
+
+    def recover_recommend_list(self, selectors, timeout_ms=5000):
+        self.recover_recommend_list_calls += 1
+        self.current_url = selectors.recommend_url
+        return True
 
     def open_recommend_candidate(self, card, selectors):
         self.opened_ids.append(card["external_id"])
@@ -116,6 +149,8 @@ class FakeRecommendRuntime:
 
     def close_recommend_detail(self, selectors):
         self.current_url = "https://www.zhipin.com/web/chat/recommend"
+        if self.close_recommend_detail_results:
+            return self.close_recommend_detail_results.pop(0)
         return True
 
     def is_manual_verification_page(self):
@@ -325,6 +360,36 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertEqual(runtime.opened_ids, [])
         self.assertEqual(checker_calls, [(["recommend-001"], None)])
 
+    def test_recent_seen_external_ids_ignores_placeholder_playwright_ids(self):
+        runtime = FakeRecommendRuntime()
+        checker_calls = []
+
+        def fake_checker(external_ids, *, max_age_hours=None):
+            checker_calls.append((list(external_ids), max_age_hours))
+            return set(external_ids)
+
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+            existing_candidate_checker=fake_checker,
+        )
+
+        seen = agent._recent_seen_external_ids(
+            [
+                {"external_id": "playwright-2"},
+                {"external_id": "playwright-fp-stable123"},
+                {"external_id": "real-external-id"},
+            ],
+            {"skip_existing_candidates": True},
+        )
+
+        self.assertEqual(seen, {"playwright-fp-stable123", "real-external-id"})
+        self.assertEqual(
+            checker_calls,
+            [(["playwright-fp-stable123", "real-external-id"], None)],
+        )
+
     def test_recommend_flow_applies_human_browse_delay(self):
         runtime = FakeRecommendRuntime()
         agent = PlaywrightLocalAgent(
@@ -370,9 +435,28 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(runtime.manual_verification_wait_calls, [(30000, 1500)])
 
-    def test_recommend_flow_waits_for_login_scan(self):
+    def test_recommend_flow_fails_fast_when_login_scan_is_visible(self):
         runtime = FakeRecommendRuntime()
         runtime.login_scan_active = True
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        with self.assertRaisesRegex(RuntimeError, "先在 9222"):
+            agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                search_config={"login_scan_wait_seconds": 15},
+                max_pages=1,
+            )
+        self.assertEqual(runtime.login_scan_wait_calls, [])
+
+    def test_recommend_flow_goes_directly_to_recommend_page_without_preparing_login_page(self):
+        runtime = FakeRecommendRuntime()
         agent = PlaywrightLocalAgent(
             runtime=runtime,
             selectors=self._selectors(),
@@ -388,7 +472,161 @@ class RecommendFlowTests(unittest.TestCase):
             max_pages=1,
         )
         self.assertEqual(len(items), 1)
-        self.assertEqual(runtime.login_scan_wait_calls, [(15000, 1500)])
+        self.assertEqual(runtime.prepare_recommend_login_calls, [])
+        self.assertEqual(runtime.events[:1], ["goto_recommend_page"])
+
+    def test_recommend_flow_traces_recommend_ready_state(self):
+        runtime = FakeRecommendRuntime()
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        trace_events = []
+        agent.set_trace_logger(lambda event_type, payload: trace_events.append((event_type, payload)))
+        agent.start_session()
+
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_mode="recommend",
+            max_pages=1,
+        )
+
+        self.assertEqual(len(items), 1)
+        ready_event = next(payload for event_type, payload in trace_events if event_type == "recommend.list_ready")
+        self.assertEqual(ready_event["ready_selector"], ".card-list")
+        self.assertEqual(ready_event["frame_name"], "recommendFrame")
+        self.assertEqual(ready_event["frame_url"], "https://www.zhipin.com/web/frame/recommend/mock")
+        self.assertEqual(ready_event["card_count"], 1)
+
+    def test_recommend_flow_collects_recommend_cards_once_per_page(self):
+        runtime = FakeRecommendRuntime()
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_mode="recommend",
+            search_config={"login_scan_wait_seconds": 15},
+            max_pages=1,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(runtime.collect_recommend_cards_calls, 1)
+
+    def test_recommend_flow_fails_when_first_page_has_no_recommend_cards(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards = []
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+
+        with self.assertRaisesRegex(RuntimeError, "No recommend candidate cards detected"):
+            agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                max_pages=1,
+            )
+
+        self.assertEqual(runtime.collect_recommend_cards_calls, 2)
+
+    def test_recommend_flow_recovers_same_page_when_detail_close_fails(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards = [
+            {
+                **runtime.cards[0],
+                "external_id": "recommend-001",
+                "name": "候选人A",
+            },
+            {
+                **runtime.cards[0],
+                "external_id": "recommend-002",
+                "name": "候选人B",
+            },
+        ]
+        runtime.close_recommend_detail_results = [False, True]
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            2,
+            search_mode="recommend",
+            max_pages=1,
+        )
+        self.assertEqual(len(items), 2)
+        self.assertEqual(runtime.opened_ids, ["recommend-001", "recommend-002"])
+        self.assertEqual(runtime.recover_recommend_list_calls, 1)
+        self.assertEqual(runtime.next_page_calls, 0)
+        self.assertEqual(runtime.collect_recommend_cards_calls, 2)
+
+    def test_recommend_flow_processes_multiple_cards_even_with_same_external_id(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards = [
+            {
+                **runtime.cards[0],
+                "external_id": "same-id",
+                "name": "候选人A",
+                "summary_text": "候选人A 5年测试经验 本科",
+            },
+            {
+                **runtime.cards[0],
+                "external_id": "same-id",
+                "name": "候选人B",
+                "summary_text": "候选人B 6年测试经验 本科",
+            },
+        ]
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            2,
+            search_mode="recommend",
+            search_config={"login_scan_wait_seconds": 15},
+            max_pages=1,
+        )
+        self.assertEqual(len(items), 2)
+        self.assertEqual(runtime.collect_recommend_cards_calls, 1)
+
+    def test_recommend_flow_raises_when_login_scan_is_still_visible(self):
+        runtime = FakeRecommendRuntime()
+        runtime.login_scan_active = True
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        with self.assertRaisesRegex(RuntimeError, "先在 9222"):
+            agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                search_config={"login_scan_wait_seconds": 15},
+                max_pages=1,
+            )
+        self.assertEqual(runtime.login_scan_wait_calls, [])
 
     def test_recommend_flow_enriches_phase2_scoring_payload(self):
         runtime = FakeRecommendRuntime()
@@ -464,14 +702,16 @@ class RecommendFlowTests(unittest.TestCase):
                 max_pages=1,
             )
 
-    def test_recommend_flow_raises_when_login_scan_not_cleared(self):
+    def test_recommend_flow_does_not_wait_for_login_scan_in_direct_attach_mode(self):
         class BlockingLoginRuntime(FakeRecommendRuntime):
+            def is_login_scan_page(self):
+                return False
+
             def wait_for_login_scan(self, timeout_ms=15000, check_interval_ms=1500):
                 self.login_scan_wait_calls.append((timeout_ms, check_interval_ms))
                 return False
 
         runtime = BlockingLoginRuntime()
-        runtime.login_scan_active = True
         agent = PlaywrightLocalAgent(
             runtime=runtime,
             selectors=self._selectors(),
@@ -479,11 +719,12 @@ class RecommendFlowTests(unittest.TestCase):
         )
         self.addCleanup(agent.stop_session)
         agent.start_session()
-        with self.assertRaisesRegex(RuntimeError, "QR scan login"):
-            agent.collect_candidates(
-                "qa_test_engineer_v1",
-                1,
-                search_mode="recommend",
-                search_config={"login_scan_wait_seconds": 15},
-                max_pages=1,
-            )
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_mode="recommend",
+            search_config={"login_scan_wait_seconds": 15},
+            max_pages=1,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(runtime.login_scan_wait_calls, [])

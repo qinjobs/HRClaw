@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .api import handle_request
 from .config import load_local_env
+from .email_resume_ingest.scheduler import EmailResumeIngestScheduler
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -40,9 +42,19 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def run(host: str = "127.0.0.1", port: int = 8080) -> None:
     load_local_env()
+    scheduler: EmailResumeIngestScheduler | None = None
+    if str(os.getenv("SCREENING_EMAIL_INGEST_SCHEDULER_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        poll_seconds = max(5, int(os.getenv("SCREENING_EMAIL_INGEST_SCHEDULER_POLL_SECONDS", "60") or 60))
+        scheduler = EmailResumeIngestScheduler()
+        scheduler.start_in_background(poll_seconds=poll_seconds)
+        print(f"[email-ingest] scheduler started, poll_seconds={poll_seconds}")
     server = ThreadingHTTPServer((host, port), RequestHandler)
     print(f"Listening on http://{host}:{port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        if scheduler is not None:
+            scheduler.stop()
 
 
 if __name__ == "__main__":

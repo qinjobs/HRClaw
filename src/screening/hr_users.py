@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from .db import connect
+from .jd_scorecard_repositories import get_jd_scorecard
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._@-]{3,64}$")
@@ -15,6 +16,7 @@ PASSWORD_MIN_LENGTH = 3
 PASSWORD_SCHEME = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 120_000
 USER_ROLES = {"admin", "hr"}
+EMAIL_INGEST_FIXED_SOURCE = "email_import"
 
 
 def _normalize_username(value: str) -> str:
@@ -45,6 +47,36 @@ def _normalize_notes(value: str | None) -> str:
     if len(notes) > 500:
         raise ValueError("备注不能超过 500 个字符")
     return notes
+
+
+def _normalize_default_scorecard_id(value: str | None) -> str | None:
+    scorecard_id = str(value or "").strip()
+    if not scorecard_id:
+        return None
+    if not get_jd_scorecard(scorecard_id):
+        raise ValueError("默认评分卡不存在")
+    return scorecard_id
+
+
+def _normalize_email_ingest_interval(value: int | str | None, *, fallback: int = 60) -> int:
+    if value in (None, ""):
+        return max(5, int(fallback))
+    try:
+        minutes = int(value)
+    except Exception as exc:
+        raise ValueError("邮箱采集间隔必须是整数分钟") from exc
+    if minutes < 5 or minutes > 1440:
+        raise ValueError("邮箱采集间隔范围必须在 5-1440 分钟")
+    return minutes
+
+
+def _normalize_email_ingest_directory(value: str | None) -> str | None:
+    directory = str(value or "").strip()
+    if not directory:
+        return None
+    if len(directory) > 800:
+        raise ValueError("采集目录长度不能超过 800 个字符")
+    return directory
 
 
 def _normalize_password(value: str) -> str:
@@ -93,6 +125,13 @@ def _user_from_row(row, *, include_secret: bool = False) -> dict[str, Any] | Non
         "display_name": str(item.get("display_name") or item.get("username") or ""),
         "role": str(item.get("role") or "hr"),
         "active": bool(item.get("active")),
+        "default_scorecard_id": str(item.get("default_scorecard_id") or "") or None,
+        "email_ingest_enabled": bool(item.get("email_ingest_enabled")),
+        "email_ingest_interval_minutes": int(item.get("email_ingest_interval_minutes") or 60),
+        "email_ingest_source": EMAIL_INGEST_FIXED_SOURCE,
+        "email_ingest_directory": str(item.get("email_ingest_directory") or "") or None,
+        "email_ingest_next_run_at": item.get("email_ingest_next_run_at"),
+        "email_ingest_last_run_at": item.get("email_ingest_last_run_at"),
         "notes": str(item.get("notes") or ""),
         "last_login_at": item.get("last_login_at"),
         "system_managed": bool(item.get("system_managed")),
@@ -211,6 +250,11 @@ def create_hr_user(
     display_name: str | None = None,
     role: str = "hr",
     active: bool = True,
+    default_scorecard_id: str | None = None,
+    email_ingest_enabled: bool = False,
+    email_ingest_interval_minutes: int | str = 60,
+    email_ingest_source: str = EMAIL_INGEST_FIXED_SOURCE,
+    email_ingest_directory: str | None = None,
     notes: str | None = None,
     operator: str = "admin",
 ) -> dict[str, Any]:
@@ -218,6 +262,10 @@ def create_hr_user(
     normalized_role = _normalize_role(role)
     normalized_display_name = _normalize_display_name(display_name, fallback=normalized_username)
     normalized_notes = _normalize_notes(notes)
+    normalized_default_scorecard_id = _normalize_default_scorecard_id(default_scorecard_id)
+    normalized_email_ingest_interval = _normalize_email_ingest_interval(email_ingest_interval_minutes, fallback=60)
+    normalized_email_ingest_source = EMAIL_INGEST_FIXED_SOURCE
+    normalized_email_ingest_directory = _normalize_email_ingest_directory(email_ingest_directory)
     password_hash = hash_password(password)
 
     with connect() as conn:
@@ -232,8 +280,9 @@ def create_hr_user(
             """
             insert into hr_users (
                 id, username, display_name, password_hash, role, active, notes,
-                system_managed, created_by, updated_by
-            ) values (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                default_scorecard_id, email_ingest_enabled, email_ingest_interval_minutes,
+                email_ingest_source, email_ingest_directory, system_managed, created_by, updated_by
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 user_id,
@@ -243,6 +292,11 @@ def create_hr_user(
                 normalized_role,
                 1 if active else 0,
                 normalized_notes,
+                normalized_default_scorecard_id,
+                1 if email_ingest_enabled else 0,
+                normalized_email_ingest_interval,
+                normalized_email_ingest_source,
+                normalized_email_ingest_directory,
                 str(operator or "admin"),
                 str(operator or "admin"),
             ),
@@ -257,6 +311,11 @@ def update_hr_user(
     display_name: str | None = None,
     role: str | None = None,
     active: bool | None = None,
+    default_scorecard_id: str | None = None,
+    email_ingest_enabled: bool | None = None,
+    email_ingest_interval_minutes: int | str | None = None,
+    email_ingest_source: str | None = None,
+    email_ingest_directory: str | None = None,
     notes: str | None = None,
     operator: str = "admin",
 ) -> dict[str, Any]:
@@ -269,6 +328,23 @@ def update_hr_user(
         next_active = bool(existing.get("active")) if active is None else bool(active)
         next_display_name = _normalize_display_name(display_name, fallback=str(existing.get("username") or ""))
         next_notes = _normalize_notes(notes if notes is not None else existing.get("notes"))
+        if default_scorecard_id is None:
+            next_default_scorecard_id = str(existing.get("default_scorecard_id") or "") or None
+        else:
+            next_default_scorecard_id = _normalize_default_scorecard_id(default_scorecard_id)
+        if email_ingest_enabled is None:
+            next_email_ingest_enabled = bool(existing.get("email_ingest_enabled"))
+        else:
+            next_email_ingest_enabled = bool(email_ingest_enabled)
+        next_email_ingest_interval = _normalize_email_ingest_interval(
+            email_ingest_interval_minutes,
+            fallback=int(existing.get("email_ingest_interval_minutes") or 60),
+        )
+        next_email_ingest_source = EMAIL_INGEST_FIXED_SOURCE
+        if email_ingest_directory is None:
+            next_email_ingest_directory = str(existing.get("email_ingest_directory") or "") or None
+        else:
+            next_email_ingest_directory = _normalize_email_ingest_directory(email_ingest_directory)
 
         if bool(existing.get("system_managed")) and (next_role != "admin" or not next_active):
             raise ValueError("系统管理员账号不能被停用或降级")
@@ -283,6 +359,11 @@ def update_hr_user(
             set display_name = ?,
                 role = ?,
                 active = ?,
+                default_scorecard_id = ?,
+                email_ingest_enabled = ?,
+                email_ingest_interval_minutes = ?,
+                email_ingest_source = ?,
+                email_ingest_directory = ?,
                 notes = ?,
                 updated_by = ?,
                 updated_at = current_timestamp
@@ -292,6 +373,11 @@ def update_hr_user(
                 next_display_name,
                 next_role,
                 1 if next_active else 0,
+                next_default_scorecard_id,
+                1 if next_email_ingest_enabled else 0,
+                next_email_ingest_interval,
+                next_email_ingest_source,
+                next_email_ingest_directory,
                 next_notes,
                 str(operator or "admin"),
                 str(existing.get("id") or ""),
@@ -337,4 +423,57 @@ def record_hr_user_login(user_id: str) -> None:
             where id = ?
             """,
             (str(user_id or "").strip(),),
+        )
+
+
+def list_email_ingest_users(*, due_only: bool = False, user_id: str | None = None) -> list[dict[str, Any]]:
+    clauses = ["active = 1", "email_ingest_enabled = 1", "default_scorecard_id is not null", "default_scorecard_id != ''"]
+    params: list[Any] = []
+    if due_only:
+        clauses.append("(email_ingest_next_run_at is null or datetime(email_ingest_next_run_at) <= datetime('now'))")
+    if user_id:
+        clauses.append("id = ?")
+        params.append(str(user_id).strip())
+    where_clause = " and ".join(clauses)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            select *
+            from hr_users
+            where {where_clause}
+            order by coalesce(email_ingest_next_run_at, created_at) asc, created_at asc
+            """,
+            params,
+        ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = _user_from_row(row)
+        if item:
+            items.append(item)
+    return items
+
+
+def mark_email_ingest_run(
+    user_id: str,
+    *,
+    next_run_at: str | None,
+    last_run_at: str | None = None,
+) -> None:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return
+    with connect() as conn:
+        conn.execute(
+            """
+            update hr_users
+            set email_ingest_next_run_at = ?,
+                email_ingest_last_run_at = coalesce(?, email_ingest_last_run_at),
+                updated_at = current_timestamp
+            where id = ?
+            """,
+            (
+                next_run_at,
+                last_run_at,
+                normalized_user_id,
+            ),
         )

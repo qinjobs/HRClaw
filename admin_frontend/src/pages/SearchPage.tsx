@@ -142,7 +142,6 @@ export function SearchPage() {
       username={bootstrap.username}
       userRole={bootstrap.userRole}
       title="高级搜索"
-      subtitle="保留原有 query、回灌索引、解释与重排逻辑，但把筛选结构、结果密度和反馈节奏重构成产品级检索后台。"
     >
       <div className="grid gap-4 md:grid-cols-3">
         <StatTile label="匹配模式" value={explain ? "检索 + 解释" : "仅检索"} hint="解释开启时会继续补充风险点与建议追问" />

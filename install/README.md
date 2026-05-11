@@ -6,26 +6,20 @@
 
 1. 阅读完整手册：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/中文说明书-部署与使用.md`
-2. 先看试点 SOP：
-   `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/HRClaw_试点SOP.md`
-3. 如为公司内网上线，先对照：
+2. 如为公司内网上线，先对照：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/docs/内网部署实施清单.md`
-4. 如果部署到 Windows 10 单机，优先使用：
+3. 如果部署到 Windows 10 单机，优先使用：
    `/Users/jobs/Documents/CODEX/ZHAOPIN/install/windows/README.md`
-5. 执行第一阶段安装：
+4. 执行第一阶段安装：
    `bash install/scripts/bootstrap_phase1_env.sh`
-6. 如需第二阶段 OCR 和批量导入能力，再执行：
+5. 如需第二阶段 OCR 和批量导入能力，再执行：
    `bash install/scripts/bootstrap_phase2_env.sh`
-7. 准备配置：
+6. 准备配置：
    `cp install/packages/config/.env.local.example .env.local`
-8. 启动服务：
+7. 启动服务：
    `bash install/scripts/start_server.sh`
-9. 健康检查：
+8. 健康检查：
    `bash install/scripts/check_health.sh`
-10. 如需浏览器采集能力，再安装 Chrome 插件：
-   - 解压目录：`install/packages/chrome_extension/boss_resume_score/`
-   - 压缩包：`install/packages/chrome_extension/boss_resume_score.zip`
-   - 插件使用说明：`chrome_extensions/boss_resume_score/README.md`
 
 ## 2. 目录结构
 
@@ -65,13 +59,14 @@ install/
 
 - `.env.local.example`：Windows 默认环境变量模板
 - `admin_frontend-dist.zip`：Windows 友好的后台页面静态产物
+- `uv/`：uv 离线安装资源
+- `kimi-cli/`：kimi-cli 离线安装资源
 - `README.md`：Windows 安装包说明
 
 ### `packages/chrome_extension`
 
 - `boss_resume_score/`：Chrome 插件已解压目录
 - `boss_resume_score.zip`：Chrome 插件压缩包
-- 这部分是 HRClaw 的浏览器采集层，用于把候选人页面快照送进同一套评分引擎
 
 ### `scripts`
 
@@ -81,6 +76,8 @@ install/
 - `start_server.sh`
 - `stop_server.sh`
 - `check_health.sh`
+- `scripts/build_windows_offline_bundle.sh`：打包 Windows 离线安装包
+- `scripts/build_macos_tahoe_bundle.sh`：打包 macOS Tahoe 26+（Apple Silicon）安装包
 
 ### `windows`
 
@@ -88,10 +85,12 @@ install/
 - `start_server.ps1` / `start_server.bat`：Windows 启动服务
 - `stop_server.ps1` / `stop_server.bat`：Windows 停止服务
 - `check_health.ps1` / `check_health.bat`：Windows 健康检查
+- `install_uv.ps1` / `install_uv.bat`：Windows 离线安装 uv
+- `install_kimi_cli.ps1` / `install_kimi_cli.bat`：Windows 离线安装 kimi-cli
 - `restore_frontend_dist.ps1`：Windows 恢复前端静态产物
 
 ## 4. 说明
 
 - 后台 React 构建产物已经打包好，默认不要求部署机重新安装前端依赖
-- GitHub 仓库默认不携带大体积 PaddlePaddle wheel
-- 如果目标机器需要离线安装 OCR，请按目标平台补充对应 wheel，或在安装时在线拉取依赖
+- OCR 依赖中的 PaddlePaddle wheel 目前只附带了本机现成的 `macOS arm64` 版本
+- 如果目标机器平台不同，请按目标平台补充对应 wheel 或在线安装

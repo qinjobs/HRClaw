@@ -17,6 +17,25 @@
       "justMyCode": false
     },
     {
+      "name": "Python: HRClaw backend (8080, attach Chrome 9222)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.screening.server",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "SCREENING_SERVER_HOST": "127.0.0.1",
+        "SCREENING_SERVER_PORT": "8080",
+        "SCREENING_BROWSER_CDP_URL": "http://127.0.0.1:9222",
+        "SCREENING_BROWSER_CDP_PORT": "9222",
+        "SCREENING_BROWSER_CDP_REQUIRED": "true",
+        "SCREENING_BROWSER_FALLBACK_CDP_PORTS": "9222"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
       "name": "Python: unittest (all)",
       "type": "debugpy",
       "request": "launch",
@@ -72,6 +91,13 @@
       "name": "HRClaw: backend + frontend",
       "configurations": [
         "Python: HRClaw backend (8080)",
+        "Frontend: Vite dev server"
+      ]
+    },
+    {
+      "name": "HRClaw: backend (attach 9222) + frontend",
+      "configurations": [
+        "Python: HRClaw backend (8080, attach Chrome 9222)",
         "Frontend: Vite dev server"
       ]
     }

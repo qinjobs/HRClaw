@@ -397,6 +397,34 @@ class ApiFlowTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertTrue(payload["task"]["search_config"]["skip_existing_candidates"])
 
+    def test_recommend_run_requires_local_9222_cdp_in_playwright_mode(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 5,
+                "max_pages": 1,
+                "sort_by": "active",
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "playwright"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ), mock.patch.object(
+            self.api,
+            "_probe_cdp_9222_chrome",
+            return_value=(False, "无法访问 http://127.0.0.1:9222/json/version。"),
+        ):
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 400)
+        payload = json.loads(body)
+        self.assertIn("9222", payload["error"])
+
     def test_boss_session_save_prompts_manual_login_when_not_detected(self):
         cookie = self._login_cookie()
         handler = self._make_handler("POST", "/api/boss/session/save", {})

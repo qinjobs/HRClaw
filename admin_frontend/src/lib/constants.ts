@@ -2,6 +2,7 @@ import {
   ClipboardCheck,
   FileUp,
   LayoutDashboard,
+  MailCheck,
   PlayCircle,
   Search,
   Sparkles,
@@ -17,6 +18,7 @@ export const adminNavItems = [
   { href: "/hr/search", label: "高级搜索", icon: Search },
   { href: "/hr/phase2", label: "JD评分卡", icon: Upload },
   { href: "/hr/resume-imports", label: "简历导入", icon: FileUp },
+  { href: "/hr/email-ingest", label: "邮箱采集", icon: MailCheck },
   { href: "/hr/users", label: "用户管理", icon: UsersRound, adminOnly: true },
 ];
 

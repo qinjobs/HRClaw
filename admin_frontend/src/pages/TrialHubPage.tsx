@@ -25,22 +25,20 @@ type LaunchCardProps = {
 
 function LaunchCard({ icon: Icon, title, description, actionLabel, href, badge }: LaunchCardProps) {
   return (
-    <div className="rounded-xl bg-white p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[#0071e3] text-white">
-            <Icon className="size-5" />
+    <div className="flex h-full min-h-[228px] flex-col rounded-xl bg-white p-6">
+      <div className="flex min-h-0 flex-1 items-start gap-3">
+        <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[#0071e3] text-white">
+          <Icon className="size-5" />
+        </div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-[21px] font-semibold leading-[1.19] tracking-[-0.03em] text-[#1d1d1f]">{title}</h3>
+            {badge ? <Badge variant="neutral">{badge}</Badge> : null}
           </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-[21px] font-semibold leading-[1.19] tracking-[-0.03em] text-[#1d1d1f]">{title}</h3>
-              {badge ? <Badge variant="neutral">{badge}</Badge> : null}
-            </div>
-            <p className="mt-2 text-[15px] leading-[1.47] tracking-[-0.022em] text-black/68">{description}</p>
-          </div>
+          <p className="mt-2 text-[15px] leading-[1.47] tracking-[-0.022em] text-black/68">{description}</p>
         </div>
       </div>
-      <div className="mt-5">
+      <div className="mt-6 pt-1">
         <Button asChild className="w-full justify-center">
           <a href={href}>
             {actionLabel}
@@ -147,7 +145,7 @@ export function TrialHubPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid gap-4 lg:grid-cols-3">
+              <div className="grid items-stretch gap-4 lg:grid-cols-3">
                 <LaunchCard
                   icon={Sparkles}
                   title="JD 评分卡"

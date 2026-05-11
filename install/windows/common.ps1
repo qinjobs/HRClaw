@@ -140,6 +140,103 @@ function Get-PythonInstallerUrl {
   return "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe"
 }
 
+function Test-PythonVersionMatch {
+  param(
+    [Parameter(Mandatory = $true)][string]$CommandPath,
+    [string[]]$Arguments = @(),
+    [string]$RequiredVersionPrefix = "3.12"
+  )
+
+  if (-not $CommandPath -or -not (Test-Path $CommandPath)) {
+    return $null
+  }
+
+  try {
+    $output = & $CommandPath @Arguments -c "import sys; print(sys.version.split()[0]); print(sys.executable)"
+    if ($LASTEXITCODE -ne 0) {
+      return $null
+    }
+    $lines = @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ($lines.Count -lt 2) {
+      return $null
+    }
+    $version = $lines[0]
+    $executable = $lines[$lines.Count - 1]
+    if ($version.StartsWith($RequiredVersionPrefix) -and (Test-Path $executable)) {
+      return $executable
+    }
+  } catch {
+    return $null
+  }
+
+  return $null
+}
+
+function Resolve-SystemPython312 {
+  try {
+    $pyLauncher = Get-Command py -ErrorAction Stop
+    $resolvedFromLauncher = Test-PythonVersionMatch -CommandPath $pyLauncher.Source -Arguments @("-3.12")
+    if ($resolvedFromLauncher) {
+      return $resolvedFromLauncher
+    }
+  } catch {
+    # ignore
+  }
+
+  foreach ($commandName in @("python", "python3", "python3.12")) {
+    try {
+      $command = Get-Command $commandName -ErrorAction Stop
+      $resolvedFromPath = Test-PythonVersionMatch -CommandPath $command.Source
+      if ($resolvedFromPath) {
+        return $resolvedFromPath
+      }
+    } catch {
+      # ignore
+    }
+  }
+
+  $registryCandidates = @(
+    "HKCU:\Software\Python\PythonCore\3.12\InstallPath",
+    "HKLM:\Software\Python\PythonCore\3.12\InstallPath",
+    "HKLM:\Software\WOW6432Node\Python\PythonCore\3.12\InstallPath"
+  )
+  foreach ($registryPath in $registryCandidates) {
+    try {
+      $registryItem = Get-Item -Path $registryPath -ErrorAction Stop
+      $installPath = $registryItem.GetValue("")
+      if ($installPath) {
+        $candidate = Join-Path $installPath "python.exe"
+        $resolvedFromRegistry = Test-PythonVersionMatch -CommandPath $candidate
+        if ($resolvedFromRegistry) {
+          return $resolvedFromRegistry
+        }
+      }
+    } catch {
+      # ignore
+    }
+  }
+
+  $directCandidates = @()
+  if ($env:LOCALAPPDATA) {
+    $directCandidates += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe")
+  }
+  if ($env:ProgramFiles) {
+    $directCandidates += (Join-Path $env:ProgramFiles "Python312\python.exe")
+  }
+  if (${env:ProgramFiles(x86)}) {
+    $directCandidates += (Join-Path ${env:ProgramFiles(x86)} "Python312\python.exe")
+  }
+
+  foreach ($candidate in $directCandidates) {
+    $resolvedFromKnownPath = Test-PythonVersionMatch -CommandPath $candidate
+    if ($resolvedFromKnownPath) {
+      return $resolvedFromKnownPath
+    }
+  }
+
+  return $null
+}
+
 function Test-Url {
   param([Parameter(Mandatory = $true)][string]$Url)
   try {

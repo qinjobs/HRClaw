@@ -11,9 +11,13 @@ const variantClassNames: Record<NonNullable<BrandLogoProps["variant"]>, string> 
 };
 
 export function BrandLogo({ className, variant = "header" }: BrandLogoProps) {
+  const src =
+    variant === "header"
+      ? "/admin-static/HRCLAW-LOGO-MENU-0423.jpg?v=20260423"
+      : "/admin-static/HRCLAW-LOGO-0423.png?v=20260423";
   return (
     <img
-      src="/admin-static/logo.jpg?v=20260328"
+      src={src}
       alt="HRClaw"
       className={cn("select-none object-contain", variantClassNames[variant], className)}
       draggable={false}

@@ -610,6 +610,16 @@ def phase2_page_html(username: str) -> str:
     const selectedFiles = document.getElementById("selectedFiles");
     const importStatus = document.getElementById("importStatus");
 
+    function upsertScorecardInState(record) {
+      if (!record || !record.id) return;
+      const index = state.scorecards.findIndex((item) => item.id === record.id);
+      if (index >= 0) {
+        state.scorecards[index] = record;
+      } else {
+        state.scorecards.unshift(record);
+      }
+    }
+
     function esc(value) {
       if (value === null || value === undefined) return "";
       return String(value)
@@ -761,7 +771,7 @@ def phase2_page_html(username: str) -> str:
     }
 
     async function loadScorecards(preferredId = null) {
-      const data = await getJson("/api/v2/scorecards");
+      const data = await getJson(`/api/v2/scorecards?_ts=${Date.now()}`);
       state.scorecards = data.items || [];
       if (preferredId) state.currentScorecardId = preferredId;
       renderScorecardOptions();
@@ -794,7 +804,10 @@ def phase2_page_html(username: str) -> str:
       const payload = collectScorecardPayload();
       const data = await postJson("/api/v2/scorecards", payload);
       state.currentScorecardId = data.item.id;
-      await loadScorecards(data.item.id);
+      upsertScorecardInState(data.item);
+      renderScorecardOptions();
+      fillScorecardForm(data.item);
+      void loadScorecards(data.item.id);
       setBuilderMeta(`评分卡已保存：${data.item.name}`, data.item.scorecard);
     }
 

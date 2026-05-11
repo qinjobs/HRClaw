@@ -1,4 +1,4 @@
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { LogOut } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -28,11 +28,10 @@ export function AppShell({
   titleClassName,
   subtitleClassName,
   showPageTitle = true,
-  showWorkspacePanel = true,
+  showWorkspacePanel: _showWorkspacePanel = true,
   children,
 }: AppShellProps) {
   const location = useLocation();
-  const navigate = useNavigate();
   const navItems = adminNavItems.filter((item) => !item.adminOnly || userRole === "admin");
 
   const logout = async () => {
@@ -90,63 +89,32 @@ export function AppShell({
         </header>
 
         <main
-          className={cn("flex-1", showPageTitle ? "pt-8 md:pt-10" : "pt-4 md:pt-6")}
+          className={cn("flex-1", showPageTitle ? "pt-6 md:pt-8" : "pt-4 md:pt-6")}
           style={{ paddingBottom: "max(3.5rem, env(safe-area-inset-bottom))" }}
         >
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.28, ease: "easeOut" }}
-            className="space-y-8 pb-10 md:pb-14"
+            className="space-y-6 pb-10 md:pb-14"
           >
             {showPageTitle ? (
-              <section
-                className={cn(
-                  "grid gap-5",
-                  showWorkspacePanel
-                    ? "xl:grid-cols-[minmax(0,1.25fr)_380px] xl:items-end 2xl:grid-cols-[minmax(0,1.35fr)_420px]"
-                    : "xl:grid-cols-1",
-                )}
-              >
-                <div className="space-y-4">
+              <section className="grid gap-4 xl:grid-cols-1">
+                <div className="space-y-3">
                   <div className="max-w-5xl 2xl:max-w-6xl">
                     <h1
                       className={cn(
-                        "text-[40px] font-semibold leading-[1.07] tracking-[-0.04em] text-[#1d1d1f] md:text-[56px]",
+                        "text-[34px] font-semibold leading-[1.08] tracking-[-0.04em] text-[#1d1d1f] md:text-[46px]",
                         titleClassName,
                       )}
                     >
                       {title}
                     </h1>
                     {subtitle ? (
-                      <p className={cn("mt-4 max-w-4xl text-[17px] leading-[1.47] tracking-[-0.022em] text-black/70", subtitleClassName)}>{subtitle}</p>
+                      <p className={cn("mt-3 max-w-4xl text-[16px] leading-[1.45] tracking-[-0.02em] text-black/70", subtitleClassName)}>{subtitle}</p>
                     ) : null}
                   </div>
                 </div>
-
-                {showWorkspacePanel ? (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                    <div className="rounded-xl bg-black p-5 text-white">
-                      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/48">
-                        Session
-                      </div>
-                      <div className="mt-2 text-[21px] font-semibold leading-[1.19] tracking-[-0.03em] text-white">
-                        本地筛选控制台
-                      </div>
-                      <p className="mt-2 text-[14px] leading-[1.43] text-white/72">
-                        当前页面已接入统一评分卡体系，保留原有接口与业务行为。
-                      </p>
-                    </div>
-                    <div className="rounded-xl bg-white p-5 lg:hidden">
-                      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-black/42">
-                        Navigation
-                      </div>
-                      <Button className="mt-4 w-full justify-center" variant="secondary" onClick={() => navigate("/hr/trial")}>
-                        返回试点中心
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
               </section>
             ) : null}
 

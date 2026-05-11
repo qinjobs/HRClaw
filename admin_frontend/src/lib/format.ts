@@ -5,8 +5,32 @@ import {
   systemDecisionLabels,
 } from "@/lib/constants";
 
+function _pad(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function _parseDateTime(value?: string | null): Date | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.replace(" ", "T");
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized);
+  if (hasTimezone) {
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(normalized)) {
+    const withSeconds = normalized.length === 16 ? `${normalized}:00` : normalized;
+    const parsed = new Date(`${withSeconds}Z`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const fallback = new Date(raw);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
 export function formatTime(value?: string | null) {
-  return value || "-";
+  const date = _parseDateTime(value);
+  if (!date) return value || "-";
+  return `${date.getFullYear()}-${_pad(date.getMonth() + 1)}-${_pad(date.getDate())} ${_pad(date.getHours())}:${_pad(date.getMinutes())}:${_pad(date.getSeconds())}`;
 }
 
 export function formatStage(value?: string | null) {

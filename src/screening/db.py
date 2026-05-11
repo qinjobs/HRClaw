@@ -426,6 +426,13 @@ def init_db() -> None:
                 password_hash text not null,
                 role text not null default 'hr',
                 active integer not null default 1,
+                default_scorecard_id text,
+                email_ingest_enabled integer not null default 0,
+                email_ingest_interval_minutes integer not null default 60,
+                email_ingest_source text not null default 'boss_email',
+                email_ingest_directory text,
+                email_ingest_next_run_at text,
+                email_ingest_last_run_at text,
                 notes text not null default '',
                 last_login_at text,
                 system_managed integer not null default 0,
@@ -436,6 +443,53 @@ def init_db() -> None:
             );
 
             create index if not exists idx_hr_users_role_active on hr_users(role, active, created_at);
+
+            create table if not exists email_resume_ingest_records (
+                id text primary key,
+                user_id text not null,
+                source text not null,
+                source_date text not null,
+                file_name text not null,
+                file_path text not null,
+                file_sha1 text not null,
+                file_size integer not null default 0,
+                status text not null,
+                retry_count integer not null default 0,
+                error text,
+                task_id text,
+                scorecard_id text,
+                batch_id text,
+                import_result_id text,
+                candidate_id text,
+                resume_profile_id text,
+                decision text,
+                total_score real,
+                parse_status text,
+                evidence text not null default '{}',
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp,
+                processed_at text,
+                unique(user_id, file_sha1)
+            );
+
+            create index if not exists idx_email_ingest_records_user_created on email_resume_ingest_records(user_id, created_at);
+            create index if not exists idx_email_ingest_records_status_updated on email_resume_ingest_records(status, updated_at);
+
+            create table if not exists email_resume_push_records (
+                id text primary key,
+                ingest_record_id text not null,
+                user_id text not null,
+                candidate_id text not null,
+                push_type text not null,
+                status text not null default 'queued',
+                payload text not null default '{}',
+                error text,
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            );
+
+            create index if not exists idx_email_push_records_user_status on email_resume_push_records(user_id, status, created_at);
+            create index if not exists idx_email_push_records_candidate on email_resume_push_records(candidate_id, created_at);
 
             create table if not exists system_state (
                 key text primary key,
@@ -469,12 +523,30 @@ def init_db() -> None:
         candidate_columns = {row["name"] for row in conn.execute("pragma table_info(candidates)").fetchall()}
         if "source" not in candidate_columns:
             conn.execute("alter table candidates add column source text not null default 'pipeline'")
+        hr_user_columns = {row["name"] for row in conn.execute("pragma table_info(hr_users)").fetchall()}
+        if "default_scorecard_id" not in hr_user_columns:
+            conn.execute("alter table hr_users add column default_scorecard_id text")
+        if "email_ingest_enabled" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_enabled integer not null default 0")
+        if "email_ingest_interval_minutes" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_interval_minutes integer not null default 60")
+        if "email_ingest_source" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_source text not null default 'boss_email'")
+        if "email_ingest_directory" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_directory text")
+        if "email_ingest_next_run_at" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_next_run_at text")
+        if "email_ingest_last_run_at" not in hr_user_columns:
+            conn.execute("alter table hr_users add column email_ingest_last_run_at text")
         pipeline_columns = {row["name"] for row in conn.execute("pragma table_info(candidate_pipeline_state)").fetchall()}
         if "manual_stage_locked" not in pipeline_columns:
             conn.execute("alter table candidate_pipeline_state add column manual_stage_locked integer not null default 0")
         conn.execute("create index if not exists idx_candidates_source_created on candidates(source, created_at)")
         conn.execute(
             "create index if not exists idx_candidate_pipeline_manual_lock on candidate_pipeline_state(manual_stage_locked, updated_at)"
+        )
+        conn.execute(
+            "create index if not exists idx_hr_users_email_ingest_due on hr_users(active, email_ingest_enabled, email_ingest_next_run_at)"
         )
         if seed_builtin_scorecards:
             for job_id, scorecard in SCORECARDS.items():

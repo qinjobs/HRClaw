@@ -74,6 +74,14 @@ def summarize_model_error(detail: Any) -> str:
         or ("api key" in lower and ("invalid" in lower or "expired" in lower))
     ):
         return "模型提取已回退：Kimi API Key 无效或已过期"
+    if (
+        "llm not set" in lower
+        or "provider not found" in lower
+        or "default model" in lower and "not set" in lower
+        or "config file" in lower and "not found" in lower
+        or "api key" in lower and "not set" in lower
+    ):
+        return "模型提取已回退：Kimi CLI 未配置模型或 API Key"
     if "insufficient_quota" in lower or ("quota" in lower and "insufficient" in lower):
         return "模型提取已回退：Kimi 额度不足"
     if "rate_limit" in lower or "error code: 429" in lower:
@@ -147,11 +155,7 @@ class GPTFieldExtractor:
             if not command_tokens:
                 return False
             command = command_tokens[0]
-            if command == "kimi":
-                return shutil.which("kimi") is not None
-            if Path(command).exists():
-                return True
-            return shutil.which(command) is not None
+            return bool(command and (Path(command).exists() or shutil.which(command) is not None))
         return self.client is not None
 
     def extract_candidate(self, job_id: str, page_text: str, screenshot_base64: str | None = None) -> dict[str, Any]:
@@ -320,8 +324,39 @@ class GPTFieldExtractor:
 
     def _kimi_cli_command_tokens(self) -> list[str]:
         command = shlex.split(self.kimi_cli_command) if self.kimi_cli_command else []
+        if command:
+            resolved = self._resolve_kimi_cli_executable(command[0])
+            if resolved:
+                command[0] = resolved
         command.extend(shlex.split(self.kimi_cli_args) if self.kimi_cli_args else [])
         return command
+
+    @staticmethod
+    def _resolve_kimi_cli_executable(command: str) -> str:
+        raw = str(command or "").strip()
+        if not raw:
+            return ""
+        if Path(raw).exists():
+            return raw
+
+        resolved = shutil.which(raw)
+        if resolved:
+            return resolved
+
+        if raw != "kimi":
+            return raw
+
+        candidates = [
+            Path.home() / ".local" / "bin" / "kimi",
+            Path.home() / ".cargo" / "bin" / "kimi",
+            Path.home() / ".npm-global" / "bin" / "kimi",
+            Path("/opt/homebrew/bin/kimi"),
+            Path("/usr/local/bin/kimi"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return raw
 
     @staticmethod
     def _normalize_provider_error(detail: Any) -> str:

@@ -71,6 +71,9 @@ class ScreeningOrchestrator:
             session_id = self.browser_agent.start_session()
             update_task_status(task_id, current_status, browser_session_id=session_id)
             add_log(task_id, "info", "browser.session", {"browser_session_id": session_id})
+            set_trace_logger = getattr(self.browser_agent, "set_trace_logger", None)
+            if callable(set_trace_logger):
+                set_trace_logger(lambda event_type, payload: add_log(task_id, "info", event_type, payload))
 
             for candidate in self.browser_agent.collect_candidates(
                 task["job_id"],
@@ -203,6 +206,9 @@ class ScreeningOrchestrator:
             add_log(task_id, "error", "task.failed", {"error": str(exc)})
             raise
         finally:
+            clear_trace_logger = getattr(self.browser_agent, "set_trace_logger", None)
+            if callable(clear_trace_logger):
+                clear_trace_logger(None)
             if hasattr(self.browser_agent, "stop_session"):
                 self.browser_agent.stop_session()
 

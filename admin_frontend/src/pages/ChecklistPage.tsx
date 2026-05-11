@@ -153,7 +153,6 @@ export function ChecklistPage() {
       username={bootstrap.username}
       userRole={bootstrap.userRole}
       title="Checklist"
-      subtitle="HR 简历评分清单保留原有字段和动作，但重新梳理成更利于批量复核和稳定扫描的表格页。"
     >
       <div className="grid gap-4 md:grid-cols-3">
         <StatTile label="任务数" value={tasks.length} hint="当前筛选条件下返回的任务数量" />
@@ -163,7 +162,7 @@ export function ChecklistPage() {
 
       <PageSection
         title="筛选条件"
-        description="保留任务、岗位、日期和 limit 过滤，但补齐了 loading、empty 和 review action 的反馈。"
+        description=""
         actions={
           <Button variant="secondary" onClick={loadChecklist} disabled={isLoading}>
             <RefreshCcw className="size-4" />

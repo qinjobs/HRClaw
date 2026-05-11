@@ -14,11 +14,24 @@ if [[ ! -f "$REQ_FILE" ]]; then
   exit 1
 fi
 
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
+  PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo "unknown")"
+  echo "[install] Python 3.12+ is required, but got: $PYTHON_VERSION ($PYTHON_BIN)" >&2
+  exit 1
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "[install] creating virtualenv at $VENV_DIR"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 else
-  echo "[install] using existing virtualenv: $VENV_DIR"
+  if [[ -x "$VENV_DIR/bin/python" ]] && ! "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
+    OLD_VENV_VERSION="$("$VENV_DIR/bin/python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo "unknown")"
+    echo "[install] existing virtualenv uses Python $OLD_VENV_VERSION, recreating with $PYTHON_BIN"
+    rm -rf "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+  else
+    echo "[install] using existing virtualenv: $VENV_DIR"
+  fi
 fi
 
 # shellcheck disable=SC1091

@@ -2,9 +2,10 @@ import json
 import os
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from src.screening.gpt_extractor import GPTFieldExtractor
+from src.screening.gpt_extractor import GPTFieldExtractor, summarize_model_error
 
 
 class FakeChatResponse:
@@ -150,7 +151,7 @@ class GPTExtractorTests(unittest.TestCase):
 
         self.assertEqual(result["name"], "Alice")
         self.assertTrue(calls)
-        self.assertEqual(calls[0]["command"][0], "kimi")
+        self.assertTrue(calls[0]["command"][0].endswith("kimi"))
         self.assertIn("--print", calls[0]["command"])
         self.assertEqual(calls[0]["input"], None)
         self.assertEqual(extractor.last_usage["provider"], "kimi_cli")
@@ -196,3 +197,21 @@ class GPTExtractorTests(unittest.TestCase):
             extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
             with self.assertRaisesRegex(RuntimeError, "模型提取已回退：Kimi 响应超时"):
                 extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")
+
+    def test_resolve_kimi_cli_executable_prefers_common_user_paths(self):
+        fake_home = Path("/Users/example")
+        expected = str(fake_home / ".local/bin/kimi")
+
+        def fake_exists(self):
+            return str(self) == expected
+
+        with mock.patch("src.screening.gpt_extractor.shutil.which", return_value=None):
+            with mock.patch("pathlib.Path.exists", fake_exists):
+                with mock.patch("pathlib.Path.home", return_value=fake_home):
+                    resolved = GPTFieldExtractor._resolve_kimi_cli_executable("kimi")
+
+        self.assertEqual(resolved, expected)
+
+    def test_summarize_model_error_normalizes_missing_kimi_config(self):
+        message = summarize_model_error("LLM not set; config file not found")
+        self.assertEqual(message, "模型提取已回退：Kimi CLI 未配置模型或 API Key")

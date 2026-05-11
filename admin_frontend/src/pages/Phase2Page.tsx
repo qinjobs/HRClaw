@@ -125,6 +125,17 @@ function statusToneFromMessage(message: string): "default" | "error" | "success"
   return "default";
 }
 
+function upsertScorecardRecord(items: Phase2ScorecardRecord[], incoming: Phase2ScorecardRecord): Phase2ScorecardRecord[] {
+  const next = [...items];
+  const index = next.findIndex((item) => item.id === incoming.id);
+  if (index >= 0) {
+    next[index] = incoming;
+  } else {
+    next.unshift(incoming);
+  }
+  return next.sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")));
+}
+
 function ManagementMeta({
   label,
   value,
@@ -301,7 +312,7 @@ export function Phase2Page() {
   };
 
   const loadScorecards = async (preferredId?: string) => {
-    const data = await getJson<{ items: Phase2ScorecardRecord[] }>("/api/v2/scorecards");
+    const data = await getJson<{ items: Phase2ScorecardRecord[] }>(`/api/v2/scorecards?_ts=${Date.now()}`);
     setScorecards(data.items || []);
     const activeId = preferredId || currentScorecardId || data.items?.[0]?.id || "";
     if (activeId) {
@@ -364,7 +375,9 @@ export function Phase2Page() {
         system_managed: selectedScorecard?.system_managed ?? false,
         created_by: "hr_ui",
       });
-      await loadScorecards(data.item.id);
+      setScorecards((current) => upsertScorecardRecord(current, data.item));
+      fillForm(data.item);
+      void loadScorecards(data.item.id);
       setBuilderStatus(`评分卡已保存：${data.item.name}`);
       pushToast({ tone: "success", title: "评分卡已保存", description: data.item.name });
     } catch (error) {
