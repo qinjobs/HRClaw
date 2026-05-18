@@ -1,0 +1,132 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - img "HRClaw" [ref=e9]
+        - navigation [ref=e10]:
+          - link "试点中心" [ref=e11] [cursor=pointer]:
+            - /url: /hr/trial
+            - img [ref=e12]
+            - text: 试点中心
+          - link "任务执行" [ref=e15] [cursor=pointer]:
+            - /url: /hr/tasks
+            - img [ref=e16]
+            - text: 任务执行
+          - link "推荐处理台" [ref=e21] [cursor=pointer]:
+            - /url: /hr/workbench
+            - img [ref=e22]
+            - text: 推荐处理台
+          - link "Checklist" [ref=e25] [cursor=pointer]:
+            - /url: /hr/checklist
+            - img [ref=e26]
+            - text: Checklist
+          - link "高级搜索" [ref=e30] [cursor=pointer]:
+            - /url: /hr/search
+            - img [ref=e31]
+            - text: 高级搜索
+          - link "JD评分卡" [ref=e34] [cursor=pointer]:
+            - /url: /hr/phase2
+            - img [ref=e35]
+            - text: JD评分卡
+          - link "简历导入" [ref=e38] [cursor=pointer]:
+            - /url: /hr/resume-imports
+            - img [ref=e39]
+            - text: 简历导入
+          - link "邮箱采集" [ref=e43] [cursor=pointer]:
+            - /url: /hr/email-ingest
+            - img [ref=e44]
+            - text: 邮箱采集
+          - link "用户管理" [ref=e48] [cursor=pointer]:
+            - /url: /hr/users
+            - img [ref=e49]
+            - text: 用户管理
+      - generic [ref=e53]:
+        - generic [ref=e54]: 用户：admin
+        - button "退出" [ref=e55] [cursor=pointer]:
+          - img
+          - text: 退出
+  - main [ref=e56]:
+    - generic [ref=e57]:
+      - heading "任务执行" [level=1] [ref=e61]
+      - generic [ref=e62]:
+        - generic [ref=e63]:
+          - generic [ref=e64]: 默认流程
+          - generic [ref=e65]: 推荐牛人简历分析
+          - generic [ref=e66]: 9222 检测 → 复用已登录会话 → 打分 → 清单回写
+        - generic [ref=e67]:
+          - generic [ref=e68]: 当前模式
+          - generic [ref=e69]: 活跃优先
+          - generic [ref=e70]: 排序只影响候选人扫描顺序
+        - generic [ref=e71]:
+          - generic [ref=e72]: 后台入口
+          - generic [ref=e73]: 5 个模块
+          - generic [ref=e74]: 任务执行、推荐处理台、Checklist、搜索、JD评分卡
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - generic [ref=e77]:
+            - heading "创建并执行任务" [level=3] [ref=e78]
+            - paragraph [ref=e79]: 保留原有业务逻辑和接口，但把配置结构、状态反馈和主次按钮层级整理成更稳定的后台操作流。
+          - generic [ref=e80]:
+            - generic [ref=e81]:
+              - generic [ref=e82]:
+                - text: JD评分卡
+                - generic [ref=e83]:
+                  - combobox "JD评分卡" [ref=e84]:
+                    - option "产品经理（中建） · 自定义 JD评分卡" [selected]
+                    - option "AI应用开发工程师（java方向） · 自定义 JD评分卡"
+                    - option "测试工程师-简历提取测试 · 自定义 JD评分卡"
+                    - option "IOS-生数科技 · 自定义 JD评分卡"
+                    - option "ocr算法工程师-中核华辉 · 自定义 JD评分卡"
+                    - option "大模型算法工程师-度小满 · 自定义 JD评分卡"
+                    - option "资深数据分析-和讯网 · 自定义 JD评分卡"
+                    - option "Flutter研发-外研社 · 自定义 JD评分卡"
+                    - option "前端开发-外研社 · 自定义 JD评分卡"
+                    - option "QA Test Engineer · 内置 JD评分卡"
+                    - option "Python Development Engineer · 内置 JD评分卡"
+                    - option "Caption Aesthetic QC · 内置 JD评分卡"
+                    - option "Caption AI Trainer (Zhengzhou) · 内置 JD评分卡"
+                  - img
+              - generic [ref=e85]:
+                - text: 最大人数
+                - spinbutton "最大人数" [ref=e86]: "50"
+              - generic [ref=e87]:
+                - text: 最大分页
+                - spinbutton "最大分页" [ref=e88]: "30"
+              - generic [ref=e89]:
+                - text: 排序
+                - generic [ref=e90]:
+                  - combobox "排序" [ref=e91]:
+                    - option "活跃优先" [selected]
+                    - option "最新优先"
+                  - img
+              - generic [ref=e92]:
+                - text: 关键词
+                - textbox "关键词" [ref=e93]:
+                  - /placeholder: 默认跟随评分卡名称
+                  - text: 产品经理（中建）
+              - generic [ref=e94]:
+                - text: 城市
+                - textbox "城市" [ref=e95]:
+                  - /placeholder: 默认跟随评分卡地点
+              - generic [ref=e96]:
+                - text: 自动打招呼阈值
+                - spinbutton "自动打招呼阈值" [ref=e97]
+            - generic [ref=e98]:
+              - generic [ref=e100]:
+                - img [ref=e101]
+                - generic [ref=e103]:
+                  - generic [ref=e104]: 手动登录
+                  - generic [ref=e105]: 请先在本机 9222 调试 Chrome 中手工登录 BOSS；点击创建任务后，系统会直接复用这个已登录会话执行推荐牛人流程。
+              - generic [ref=e107]:
+                - img [ref=e108]
+                - generic [ref=e110]:
+                  - generic [ref=e111]: 执行结果
+                  - generic [ref=e112]: 执行完成后会自动跳转到 Checklist，并保留 task_id 方便继续复核。
+            - button "创建推荐牛人简历分析任务" [ref=e114] [cursor=pointer]:
+              - img
+              - text: 创建推荐牛人简历分析任务
+        - generic [ref=e116]:
+          - generic [ref=e117]:
+            - heading "执行日志" [level=3] [ref=e118]
+            - paragraph [ref=e119]: 保留原始操作反馈，但改成更易扫读的日志面板。
+          - generic [ref=e125]: 等待操作...

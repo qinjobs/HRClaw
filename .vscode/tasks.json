@@ -12,6 +12,33 @@
       "label": "Phase1: start backend",
       "type": "shell",
       "command": "bash scripts/start_phase1_server.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File install\\windows\\start_server.ps1"
+      },
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": "^(.*)$",
+              "message": 1
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "\\[phase1\\] starting server bind:",
+            "endsPattern": "\\[phase1\\] server started:"
+          }
+        }
+      ]
+    },
+    {
+      "label": "Phase1: start backend (attach Chrome 9222)",
+      "type": "shell",
+      "command": "SCREENING_BROWSER_CDP_URL=http://127.0.0.1:9222 SCREENING_BROWSER_CDP_PORT=9222 SCREENING_BROWSER_CDP_REQUIRED=true SCREENING_BROWSER_FALLBACK_CDP_PORTS=9222 bash scripts/start_phase1_server.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SCREENING_BROWSER_CDP_URL='http://127.0.0.1:9222';$env:SCREENING_BROWSER_CDP_PORT='9222';$env:SCREENING_BROWSER_CDP_REQUIRED='true';$env:SCREENING_BROWSER_FALLBACK_CDP_PORTS='9222'; & '.\\\\install\\\\windows\\\\start_server.ps1'\""
+      },
       "isBackground": true,
       "problemMatcher": [
         {
@@ -33,12 +60,33 @@
       "label": "Phase1: stop backend",
       "type": "shell",
       "command": "bash scripts/stop_phase1_server.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File install\\windows\\stop_server.ps1"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Phase1: check health",
+      "type": "shell",
+      "command": "bash scripts/check_phase1_health.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File install\\windows\\check_health.ps1"
+      },
       "problemMatcher": []
     },
     {
       "label": "Frontend: npm ci",
       "type": "shell",
       "command": "npm ci",
+      "options": {
+        "cwd": "${workspaceFolder}/admin_frontend"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: build",
+      "type": "shell",
+      "command": "npm run build",
       "options": {
         "cwd": "${workspaceFolder}/admin_frontend"
       },
@@ -83,6 +131,50 @@
       "type": "shell",
       "command": "node --test tests/extension/plugin.test.js",
       "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Chrome CDP: launch 9222",
+      "type": "shell",
+      "command": "open -na \"Google Chrome\" --args --remote-debugging-port=9222 --user-data-dir=\"$HOME/.hrclaw-chrome-cdp-9222\" --new-window \"https://www.zhipin.com/web/chat/recommend\"",
+      "windows": {
+        "command": "start \"\" \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222 --user-data-dir=\"%USERPROFILE%\\hrclaw-chrome-cdp-9222\" --new-window \"https://www.zhipin.com/web/chat/recommend\""
+      },
+      "linux": {
+        "command": "google-chrome --remote-debugging-port=9222 --user-data-dir=\"$HOME/.hrclaw-chrome-cdp-9222\" --new-window \"https://www.zhipin.com/web/chat/recommend\""
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Chrome CDP: check 9222",
+      "type": "shell",
+      "command": "curl -fsS http://127.0.0.1:9222/json/version",
+      "problemMatcher": []
+    },
+    {
+      "label": "Recommend: ready check (9222 + backend)",
+      "dependsOn": [
+        "Chrome CDP: check 9222",
+        "Phase1: check health"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "Bundle: Windows offline package",
+      "type": "shell",
+      "command": "bash scripts/build_windows_offline_bundle.sh",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: install/update runtime",
+      "type": "shell",
+      "command": "echo \"This task is Windows only\"",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File install\\windows\\install.ps1 -AllowNetworkFallback"
+      },
+      "group": "build",
       "problemMatcher": []
     },
     {

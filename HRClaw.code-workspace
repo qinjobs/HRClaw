@@ -1,0 +1,31 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.envFile": "${workspaceFolder}/.env.local",
+    "python.analysis.extraPaths": [
+      "${workspaceFolder}"
+    ],
+    "search.exclude": {
+      "**/.venv/**": true,
+      "**/node_modules/**": true,
+      "**/release/**": true,
+      "**/data/**": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.vscode-pylance",
+      "ms-python.debugpy",
+      "ms-vscode.vscode-typescript-next",
+      "dbaeumer.vscode-eslint",
+      "esbenp.prettier-vscode",
+      "ms-playwright.playwright",
+      "eamodio.gitlens"
+    ]
+  }
+}

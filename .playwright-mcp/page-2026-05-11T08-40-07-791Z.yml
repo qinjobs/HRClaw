@@ -1,0 +1,34 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - img "HRClaw" [ref=e7]
+      - paragraph [ref=e8]: HR自己的龙虾，把试点中心、推荐筛选、插件入库、批量导入、Workbench 和高阶检索统一到一套可交付的招聘后台里。
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - generic [ref=e11]: 试点中心
+        - paragraph [ref=e12]: 1 个岗位、1 个 HR、20-50 份简历的起点
+      - generic [ref=e13]:
+        - generic [ref=e14]: 任务执行
+        - paragraph [ref=e15]: 推荐流程与浏览器当前页采集统一调度
+      - generic [ref=e16]:
+        - generic [ref=e17]: JD评分卡
+        - paragraph [ref=e18]: JD 评分卡生成与 Word/PDF 批量筛查
+  - generic [ref=e19]:
+    - generic [ref=e20]:
+      - heading "登录后台" [level=3] [ref=e21]
+      - paragraph [ref=e22]: 输入账号进入后台页面。初始管理员账号已预填，后续可在后台继续创建和维护 HR 用户。
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - text: 用户名
+        - generic [ref=e26]:
+          - img
+          - textbox "用户名" [ref=e27]: admin
+      - generic [ref=e28]:
+        - text: 密码
+        - generic [ref=e29]:
+          - img
+          - textbox "密码" [ref=e30]: admin
+      - generic [ref=e31]: 初始管理员：admin / admin
+      - button "进入后台" [ref=e32] [cursor=pointer]:
+        - text: 进入后台
+        - img
