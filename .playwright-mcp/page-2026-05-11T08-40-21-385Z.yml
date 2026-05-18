@@ -1,0 +1,216 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - img "HRClaw" [ref=e9]
+        - navigation [ref=e10]:
+          - link "试点中心" [ref=e11] [cursor=pointer]:
+            - /url: /hr/trial
+            - img [ref=e12]
+            - text: 试点中心
+          - link "任务执行" [ref=e15] [cursor=pointer]:
+            - /url: /hr/tasks
+            - img [ref=e16]
+            - text: 任务执行
+          - link "推荐处理台" [ref=e21] [cursor=pointer]:
+            - /url: /hr/workbench
+            - img [ref=e22]
+            - text: 推荐处理台
+          - link "Checklist" [ref=e25] [cursor=pointer]:
+            - /url: /hr/checklist
+            - img [ref=e26]
+            - text: Checklist
+          - link "高级搜索" [ref=e30] [cursor=pointer]:
+            - /url: /hr/search
+            - img [ref=e31]
+            - text: 高级搜索
+          - link "JD评分卡" [ref=e34] [cursor=pointer]:
+            - /url: /hr/phase2
+            - img [ref=e35]
+            - text: JD评分卡
+          - link "简历导入" [ref=e38] [cursor=pointer]:
+            - /url: /hr/resume-imports
+            - img [ref=e39]
+            - text: 简历导入
+          - link "邮箱采集" [ref=e43] [cursor=pointer]:
+            - /url: /hr/email-ingest
+            - img [ref=e44]
+            - text: 邮箱采集
+          - link "用户管理" [ref=e48] [cursor=pointer]:
+            - /url: /hr/users
+            - img [ref=e49]
+            - text: 用户管理
+      - generic [ref=e53]:
+        - generic [ref=e54]: 用户：admin
+        - button "退出" [ref=e55] [cursor=pointer]:
+          - img
+          - text: 退出
+  - main [ref=e56]:
+    - generic [ref=e57]:
+      - generic [ref=e60]:
+        - heading "试点中心" [level=1] [ref=e61]
+        - paragraph [ref=e62]: 把 JD 评分卡、PDF 简历导入和 Chrome 浏览器采集收拢在一页。建议先用 1 个岗位、1 个 HR、20 到 50 份历史简历跑通闭环，浏览器采集直接基于手动登录后的当前页面。
+      - generic [ref=e63]:
+        - generic [ref=e64]:
+          - generic [ref=e65]: 试点路径
+          - generic [ref=e66]: 2 条
+          - generic [ref=e67]: 手工导入 / 当前页采集
+        - generic [ref=e68]:
+          - generic [ref=e69]: 主入口
+          - generic [ref=e70]: JD评分卡
+          - generic [ref=e71]: 先定标准，再做简历打分
+        - generic [ref=e72]:
+          - generic [ref=e73]: 插件层
+          - generic [ref=e74]: Chrome
+          - generic [ref=e75]: 已登录页面的详情页快照入库
+        - generic [ref=e76]:
+          - generic [ref=e77]: 建议规模
+          - generic [ref=e78]: 1 岗位
+          - generic [ref=e79]: 20-50 份历史简历
+      - generic [ref=e80]:
+        - generic [ref=e81]:
+          - generic [ref=e82]:
+            - generic [ref=e83]:
+              - generic [ref=e84]:
+                - generic [ref=e85]: MVP 起点
+                - generic [ref=e86]: 手工导入
+                - generic [ref=e87]: 浏览器采集
+              - generic [ref=e88]:
+                - heading "从这里开始试点" [level=3] [ref=e89]
+                - paragraph [ref=e90]: 先把一个岗位的标准和两条简历入口收拢到一页。HR 只需要在这里决定：先生成评分卡，还是直接导入简历。
+            - generic [ref=e91]:
+              - generic [ref=e92]:
+                - generic [ref=e93]:
+                  - generic [ref=e94]:
+                    - img [ref=e96]
+                    - generic [ref=e99]:
+                      - generic [ref=e100]:
+                        - heading "JD 评分卡" [level=3] [ref=e101]
+                        - generic [ref=e102]: 起点
+                      - paragraph [ref=e103]: 把岗位 JD 变成统一的筛选标准、阈值和面试题。
+                  - link "生成 / 调整评分卡" [ref=e105] [cursor=pointer]:
+                    - /url: /hr/phase2
+                    - text: 生成 / 调整评分卡
+                    - img
+                - generic [ref=e106]:
+                  - generic [ref=e107]:
+                    - img [ref=e109]
+                    - generic [ref=e113]:
+                      - generic [ref=e114]:
+                        - heading "简历导入" [level=3] [ref=e115]
+                        - generic [ref=e116]: 产品经理（中建）
+                      - paragraph [ref=e117]: 上传 PDF / Word 简历，批量打分并回看批次结果。
+                  - link "开始批量导入" [ref=e119] [cursor=pointer]:
+                    - /url: /hr/resume-imports?scorecardId=7efc59a2-f863-457f-ad37-b3c608819c9f
+                    - text: 开始批量导入
+                    - img
+                - generic [ref=e120]:
+                  - generic [ref=e121]:
+                    - img [ref=e123]
+                    - generic [ref=e126]:
+                      - generic [ref=e127]:
+                        - heading "任务执行" [level=3] [ref=e128]
+                        - generic [ref=e129]: 浏览器采集层
+                      - paragraph [ref=e130]: 在已登录的浏览器里直接采集候选人页面，并把结果回写到清单。
+                  - link "打开任务执行" [ref=e132] [cursor=pointer]:
+                    - /url: /hr/tasks
+                    - text: 打开任务执行
+                    - img
+              - generic [ref=e133]:
+                - generic [ref=e134]:
+                  - generic [ref=e135]: 选择试点评分卡
+                  - paragraph [ref=e136]: 先选一个支持简历导入的评分卡。没有评分卡时，先去 JD 评分卡页生成一份再回来导入。
+                  - generic [ref=e137]:
+                    - generic [ref=e138]:
+                      - text: 评分卡
+                      - generic [ref=e139]:
+                        - combobox [ref=e140]:
+                          - option "选择支持导入的评分卡"
+                          - option "产品经理（中建）" [selected]
+                          - option "AI应用开发工程师（java方向）"
+                          - option "测试工程师-简历提取测试"
+                          - option "IOS-生数科技"
+                          - option "ocr算法工程师-中核华辉"
+                          - option "大模型算法工程师-度小满"
+                          - option "资深数据分析-和讯网"
+                          - option "Flutter研发-外研社"
+                          - option "前端开发-外研社"
+                        - img
+                    - generic [ref=e141]:
+                      - button "开始导入" [ref=e142] [cursor=pointer]
+                      - link "生成评分卡" [ref=e143] [cursor=pointer]:
+                        - /url: /hr/phase2
+                - generic [ref=e144]:
+                  - generic [ref=e145]:
+                    - generic [ref=e146]: 可导入评分卡
+                    - generic [ref=e147]: "9"
+                  - generic [ref=e148]:
+                    - generic [ref=e149]: 当前选择
+                    - generic [ref=e150]: 产品经理（中建）
+          - generic [ref=e151]:
+            - generic [ref=e153]:
+              - generic [ref=e154]: Section
+              - heading "试点顺序" [level=2] [ref=e155]
+              - paragraph [ref=e156]: 建议按标准、导入、采集、校准的顺序推进。这样更容易在一周内拿到能验证的结果。
+            - generic [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e159]: "01"
+                - generic [ref=e160]: 先定标准
+                - paragraph [ref=e161]: 从 JD 评分卡开始，先把岗位的硬条件、加分项和阈值定下来。
+              - generic [ref=e162]:
+                - generic [ref=e163]: "02"
+                - generic [ref=e164]: 再做导入
+                - paragraph [ref=e165]: 上传 5 到 20 份 PDF 简历，确认解析、打分和证据是否稳定。
+              - generic [ref=e166]:
+                - generic [ref=e167]: "03"
+                - generic [ref=e168]: 再开插件采集
+                - paragraph [ref=e169]: Chrome 插件只负责浏览器采集层，直接在已登录的 BOSS 页面里读取当前候选人信息。
+              - generic [ref=e170]:
+                - generic [ref=e171]: "04"
+                - generic [ref=e172]: 最后做校准
+                - paragraph [ref=e173]: 用 20 到 50 份历史样本调阈值，再决定是否进入下一阶段。
+        - generic [ref=e174]:
+          - generic [ref=e176]:
+            - img [ref=e177]
+            - generic [ref=e179]:
+              - generic [ref=e180]: 试点建议
+              - generic [ref=e181]: 只验证一个岗位族，先用测试工程师最稳。不要同时开多个岗位，也不要一开始就碰 BOSS 自动抓取。
+          - generic [ref=e182]:
+            - generic [ref=e183]:
+              - heading "Chrome 插件采集层" [level=3] [ref=e184]
+              - paragraph [ref=e185]: 插件负责浏览器侧快照和当前页采集，不再依赖会话同步，不改变后台评分逻辑。
+            - generic [ref=e186]:
+              - generic [ref=e187]:
+                - generic [ref=e188]: 1. 安装插件
+                - paragraph [ref=e189]: "把 `chrome_extensions/boss_resume_score` 当作浏览器采集层安装到 Chrome。"
+              - generic [ref=e190]:
+                - generic [ref=e191]: 2. 手动登录 BOSS
+                - paragraph [ref=e192]: 在已登录的 BOSS 浏览器页里打开候选人详情，插件直接读取当前页面内容。
+              - generic [ref=e193]:
+                - generic [ref=e194]: 3. 回到任务执行
+                - paragraph [ref=e195]: 点击“打开任务执行”，直接把当前页采集进同一套评分引擎。
+              - generic [ref=e196]:
+                - link "打开任务执行" [ref=e197] [cursor=pointer]:
+                  - /url: /hr/tasks
+                - link "打开处理台" [ref=e198] [cursor=pointer]:
+                  - /url: /hr/workbench
+          - generic [ref=e199]:
+            - generic [ref=e200]:
+              - heading "试点边界" [level=3] [ref=e201]
+              - paragraph [ref=e202]: 这些能力先不进 MVP，避免试点期把价值主线稀释掉。
+            - generic [ref=e203]:
+              - generic [ref=e204]:
+                - img [ref=e205]
+                - generic [ref=e209]: BOSS session 自动抓取
+              - generic [ref=e210]:
+                - img [ref=e211]
+                - generic [ref=e215]: ATS 同步
+              - generic [ref=e216]:
+                - img [ref=e217]
+                - generic [ref=e221]: 自动打招呼
+              - generic [ref=e222]:
+                - img [ref=e223]
+                - generic [ref=e227]: 多岗位工作流
+              - generic [ref=e228]:
+                - img [ref=e229]
+                - generic [ref=e233]: 复杂报表

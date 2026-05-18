@@ -1,0 +1,8 @@
+[project]
+name = "hrclaw"
+version = "0.2.0"
+description = "Local-first recruiting copilot for JD scorecards, batch resume scoring, and browser capture"
+requires-python = ">=3.12"
+
+[tool.unittest]
+start-directory = "tests"

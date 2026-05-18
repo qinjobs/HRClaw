@@ -290,6 +290,23 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("登录", json.loads(body)["error"])
 
+    def test_fallback_pages_format_sqlite_utc_timestamps_in_local_time(self):
+        cookie = self._login_cookie()
+        workbench_html = self.api._workbench_page_html("admin")
+        checklist_handler = self._make_handler("GET", "/hr/checklist")
+        checklist_handler.headers["Cookie"] = cookie
+        with mock.patch.object(self.api, "_admin_frontend_shell", return_value=None):
+            status, body, content_type = self.api.handle_request(checklist_handler)
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", content_type)
+        checklist_html = body.decode("utf-8")
+
+        for html in (workbench_html, checklist_html):
+            self.assertIn('const normalized = raw.replace(" ", "T");', html)
+            self.assertIn('const parsed = new Date(`${withSeconds}Z`);', html)
+            self.assertIn('return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}', html)
+
     def test_recommend_run_uses_manual_browser_capture_without_session_sync(self):
         cookie = self._login_cookie()
         handler = self._make_handler(
@@ -396,6 +413,34 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertTrue(payload["task"]["search_config"]["skip_existing_candidates"])
+
+    def test_recommend_run_requires_local_9222_cdp_in_playwright_mode(self):
+        cookie = self._login_cookie()
+        handler = self._make_handler(
+            "POST",
+            "/api/recommend/run",
+            {
+                "job_id": "qa_test_engineer_v1",
+                "max_candidates": 5,
+                "max_pages": 1,
+                "sort_by": "active",
+            },
+        )
+        handler.headers["Cookie"] = cookie
+        with mock.patch.dict(os.environ, {"SCREENING_BROWSER_AGENT": "playwright"}, clear=False), mock.patch.object(
+            self.api,
+            "_force_model_env",
+            return_value=None,
+        ), mock.patch.object(
+            self.api,
+            "_probe_cdp_9222_chrome",
+            return_value=(False, "无法访问 http://127.0.0.1:9222/json/version。"),
+        ):
+            status, body = self.api.handle_request(handler)
+
+        self.assertEqual(status, 400)
+        payload = json.loads(body)
+        self.assertIn("9222", payload["error"])
 
     def test_boss_session_save_prompts_manual_login_when_not_detected(self):
         cookie = self._login_cookie()

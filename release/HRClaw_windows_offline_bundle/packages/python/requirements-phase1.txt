@@ -1,0 +1,7 @@
+openai
+playwright
+qdrant-client
+requests
+pypdf
+readability-lxml
+html2text
