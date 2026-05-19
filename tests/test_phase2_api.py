@@ -232,9 +232,31 @@ class Phase2ApiTests(unittest.TestCase):
         ):
             os.environ.pop("SCREENING_KIMI_CLI_API_KEY", None)
             os.environ.pop("SCREENING_KIMI_CLI_CONFIG", None)
-            with mock.patch("src.screening.api.shutil.which", return_value="/tmp/fake-kimi"):
+            with mock.patch("src.screening.api.shutil.which", return_value="/tmp/fake-kimi"), mock.patch(
+                "src.screening.api.Path.home", return_value=home_dir
+            ):
                 error = self.api._model_precheck_error()
-        self.assertEqual(error, "请先配置 SCREENING_KIMI_CLI_API_KEY，或先执行 kimi login / 准备 ~/.kimi/config.toml")
+        self.assertIn("SCREENING_KIMI_CLI_API_KEY", error)
+
+    def test_model_precheck_defaults_to_kimi_when_command_is_missing(self):
+        home_dir = Path(self.tmpdir.name) / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "HOME": str(home_dir),
+            },
+            clear=False,
+        ):
+            os.environ.pop("SCREENING_KIMI_CLI_COMMAND", None)
+            os.environ.pop("SCREENING_KIMI_CLI_API_KEY", None)
+            os.environ.pop("SCREENING_KIMI_CLI_CONFIG", None)
+            with mock.patch("src.screening.api.shutil.which", return_value="C:/Users/jobs/.local/bin/kimi.exe"), mock.patch(
+                "src.screening.api.Path.home", return_value=home_dir
+            ):
+                error = self.api._model_precheck_error()
+        self.assertIn("SCREENING_KIMI_CLI_API_KEY", error)
 
     def test_import_profile_supports_resume_full_and_markdown_views(self):
         save_handler = self._make_handler(

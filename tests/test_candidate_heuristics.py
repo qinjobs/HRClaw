@@ -4,9 +4,12 @@ from datetime import date
 
 from src.screening.candidate_heuristics import (
     build_fallback_normalized_fields,
+    extract_education_level,
     extract_months_since_last_job_end,
     extract_years_experience,
     has_qa_testing_evidence,
+    normalize_education_level,
+    repair_text_mojibake,
 )
 
 
@@ -18,6 +21,14 @@ class CandidateHeuristicsTests(unittest.TestCase):
     def test_extract_years_experience_handles_ocr_bullet_artifact(self):
         text = "自我评价\n1.3年功能测试经验，熟悉测试流程。"
         self.assertEqual(extract_years_experience(text), 3.0)
+
+    def test_extract_education_level_supports_normal_chinese(self):
+        text = "28岁丨硕士丨6年丨离职-随时到岗"
+        self.assertEqual(extract_education_level(text), "硕士")
+
+    def test_normalize_education_level_repairs_mojibake(self):
+        self.assertEqual(normalize_education_level("˶ʿ"), "硕士")
+        self.assertEqual(repair_text_mojibake("˶ʿ"), "硕士")
 
     def test_has_qa_testing_evidence_with_role_history_fallback(self):
         summary = (

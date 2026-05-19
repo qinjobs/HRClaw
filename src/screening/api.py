@@ -438,6 +438,8 @@ def _model_precheck_error() -> str | None:
     if provider == "kimi_cli":
         raw_command = os.getenv("SCREENING_KIMI_CLI_COMMAND", "").strip()
         if not raw_command:
+            raw_command = "kimi"
+        if not raw_command:
             return "请先配置 SCREENING_KIMI_CLI_COMMAND（例如 kimi）"
         command_tokens = shlex.split(raw_command)
         if not command_tokens:

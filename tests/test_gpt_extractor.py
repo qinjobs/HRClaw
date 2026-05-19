@@ -76,6 +76,26 @@ class GPTExtractorTests(unittest.TestCase):
         self.assertEqual(extractor.last_usage["completion_tokens"], 45)
         self.assertEqual(extractor.last_usage["total_tokens"], 168)
 
+    def test_extract_candidate_repairs_mojibake_scalar_fields(self):
+        payload = json.dumps(
+            {
+                "name": "李鑫",
+                "education_level": "˶ʿ",
+                "location": "深圳",
+                "skills": [],
+                "industry_tags": [],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "产品经理",
+                "evidence_map": {},
+            }
+        )
+        with mock.patch.dict(os.environ, {"SCREENING_EXTRACTION_PROVIDER": "openai_compatible"}, clear=False):
+            extractor = GPTFieldExtractor(client=FakeClient(payload))
+            result = extractor.extract_candidate("qa_test_engineer_v1", "硕士 深圳 产品经理", "ZmFrZQ==")
+        self.assertEqual(result["education_level"], "硕士")
+        self.assertEqual(result["location"], "深圳")
+
     def test_merge_with_fallback_builds_normalized_fields(self):
         with mock.patch.dict(os.environ, {"SCREENING_EXTRACTION_PROVIDER": "openai_compatible"}, clear=False):
             extractor = GPTFieldExtractor(client=FakeClient("{}"))
@@ -151,10 +171,79 @@ class GPTExtractorTests(unittest.TestCase):
 
         self.assertEqual(result["name"], "Alice")
         self.assertTrue(calls)
-        self.assertTrue(calls[0]["command"][0].endswith("kimi"))
+        self.assertTrue(Path(calls[0]["command"][0]).name.lower().startswith("kimi"))
         self.assertIn("--print", calls[0]["command"])
         self.assertEqual(calls[0]["input"], None)
         self.assertEqual(extractor.last_usage["provider"], "kimi_cli")
+
+    def test_extract_candidate_with_kimi_cli_default_toml_config_uses_alias_and_utf8(self):
+        payload = json.dumps(
+            {
+                "name": "Alice",
+                "education_level": "本科",
+                "skills": ["Axure"],
+                "industry_tags": ["互联网"],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "产品经理",
+                "evidence_map": {"education_level": "本科"},
+            }
+        )
+        calls: list[dict] = []
+        fake_home = Path("/Users/example")
+        config_path = fake_home / ".kimi" / "config.toml"
+        config_toml = """
+default_model = "kimi-code/kimi-for-coding"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+api_key = ""
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[models."kimi-code/kimi-for-coding"]
+provider = "managed:kimi-code"
+model = "kimi-for-coding"
+max_context_size = 262144
+"""
+
+        def fake_cli_runner(command, **kwargs):
+            calls.append({"command": command, **kwargs})
+            return type("Completed", (), {"returncode": 0, "stdout": payload, "stderr": ""})()
+
+        def fake_exists(self):
+            return self == config_path
+
+        def fake_read_text(self, encoding=None, errors=None):
+            if self == config_path:
+                return config_toml
+            raise FileNotFoundError(self)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_ENABLE_MODEL_EXTRACTION": "true",
+                "SCREENING_KIMI_CLI_COMMAND": "kimi",
+            },
+            clear=False,
+        ), mock.patch("pathlib.Path.home", return_value=fake_home), mock.patch("pathlib.Path.exists", fake_exists), mock.patch(
+            "pathlib.Path.read_text",
+            fake_read_text,
+        ):
+            extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
+            result = extractor.extract_candidate("6bf56222-70f0-4c74-b35f-86f13c54a9f4", "本科 Axure AI产品经验")
+
+        self.assertEqual(result["name"], "Alice")
+        self.assertTrue(calls)
+        self.assertIn("--config", calls[0]["command"])
+        self.assertIn("--model", calls[0]["command"])
+        self.assertIn("kimi-code/kimi-for-coding", calls[0]["command"])
+        self.assertEqual(calls[0]["encoding"], "utf-8")
+        self.assertEqual(calls[0]["errors"], "replace")
 
     def test_extract_candidate_with_kimi_cli_bridge_normalizes_invalid_auth_error(self):
         def fake_cli_runner(command, **kwargs):
@@ -197,6 +286,44 @@ class GPTExtractorTests(unittest.TestCase):
             extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
             with self.assertRaisesRegex(RuntimeError, "模型提取已回退：Kimi 响应超时"):
                 extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")
+
+    def test_extract_candidate_with_kimi_cli_bridge_retries_after_invalid_payload(self):
+        payload = json.dumps(
+            {
+                "name": "Alice",
+                "education_level": "本科",
+                "skills": ["Linux"],
+                "industry_tags": [],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "QA engineer",
+                "evidence_map": {},
+            }
+        )
+        attempts = []
+
+        def fake_cli_runner(command, **kwargs):
+            attempts.append(command)
+            if len(attempts) == 1:
+                return type("Completed", (), {"returncode": 0, "stdout": "temporary malformed output", "stderr": ""})()
+            return type("Completed", (), {"returncode": 0, "stdout": payload, "stderr": ""})()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_ENABLE_MODEL_EXTRACTION": "true",
+                "SCREENING_KIMI_CLI_COMMAND": "kimi",
+                "SCREENING_EXTRACTION_RETRIES": "1",
+                "SCREENING_EXTRACTION_RETRY_DELAY_MS": "0",
+            },
+            clear=False,
+        ):
+            extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
+            result = extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")
+
+        self.assertEqual(result["name"], "Alice")
+        self.assertEqual(len(attempts), 2)
 
     def test_resolve_kimi_cli_executable_prefers_common_user_paths(self):
         fake_home = Path("/Users/example")

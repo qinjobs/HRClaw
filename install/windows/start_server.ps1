@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\common.ps1"
 
 $projectRoot = Get-ProjectRoot
-$installRoot = Get-InstallRoot
+$installRoot = Try-GetInstallRoot
 $envFile = Join-Path $projectRoot ".env.local"
 Import-DotEnv $envFile
 $env:SCREENING_WEB_USERNAME = "admin"
@@ -21,7 +21,11 @@ $chromeProfileDir = $env:SCREENING_CHROME_CDP_USER_DATA_DIR
 if (-not $chromeProfileDir) { $chromeProfileDir = Join-Path $env:USERPROFILE ".hrclaw-chrome-cdp-$chromeCdpPort" }
 $chromeStartUrl = $env:SCREENING_CHROME_CDP_START_URL
 if (-not $chromeStartUrl) { $chromeStartUrl = "https://www.zhipin.com/web/chat/recommend" }
-$bundledChromeExe = Join-Path $installRoot "runtime\chrome\chrome-win64\chrome.exe"
+$bundledChromeExe = if ($installRoot) {
+  Join-Path $installRoot "runtime\chrome\chrome-win64\chrome.exe"
+} else {
+  Join-Path $projectRoot "runtime\chrome\chrome-win64\chrome.exe"
+}
 
 function Test-ChromeCdpReady {
   param([Parameter(Mandatory = $true)][string]$Port)

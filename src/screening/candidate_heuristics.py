@@ -177,7 +177,7 @@ CN_NUMBER_MAP = {
 
 
 def _parse_cn_number(token: str) -> float | None:
-    token = token.strip()
+    token = str(token or "").strip()
     if not token:
         return None
     if re.fullmatch(r"\d+(?:\.\d+)?", token):
@@ -203,9 +203,129 @@ def _parse_cn_number(token: str) -> float | None:
     return None
 
 
+def _iter_text_variants(text: Any) -> list[str]:
+    raw = str(text or "")
+    variants: list[str] = []
+    for value in (raw, repair_text_mojibake(raw)):
+        candidate = str(value or "")
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _repair_roundtrip_matches(source: str, candidate: str, source_encoding: str, target_encoding: str) -> bool:
+    try:
+        return candidate.encode(target_encoding).decode(source_encoding) == source
+    except Exception:
+        return False
+
+
+def _text_quality_score(text: str) -> float:
+    raw = str(text or "")
+    if not raw.strip():
+        return float("-inf")
+    score = 0.0
+    cjk_count = 0
+    weird_count = 0
+    for char in raw:
+        if char == "\ufffd":
+            score -= 8.0
+            weird_count += 1
+        elif "\u4e00" <= char <= "\u9fff":
+            score += 2.5
+            cjk_count += 1
+        elif char.isascii():
+            if char.isalnum():
+                score += 0.8
+            elif char.isspace():
+                score += 0.1
+            else:
+                score += 0.25
+        elif char in "，。？！：；、（）【】《》“”‘’·丨-":
+            score += 0.3
+        else:
+            score -= 2.5
+            weird_count += 1
+    score += min(len(raw), 40) * 0.03
+    if cjk_count >= 2:
+        score += 1.0
+    if weird_count and cjk_count == 0:
+        score -= float(weird_count)
+    return score
+
+
+def _has_explicit_mojibake_markers(text: str) -> bool:
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    if "\ufffd" in raw:
+        return True
+    return re.search(r"[\u00a0-\u024f\u02b0-\u02ff\u0370-\u03ff]", raw) is not None
+
+
+def repair_text_mojibake(value: Any) -> str | None:
+    raw = str(value or "")
+    if not raw:
+        return None if value is None else raw
+    if not _has_explicit_mojibake_markers(raw):
+        return raw
+    best = raw
+    best_score = _text_quality_score(raw)
+    attempts = (
+        ("utf-8", "gb18030"),
+        ("utf-8", "gbk"),
+        ("latin-1", "utf-8"),
+        ("cp1252", "utf-8"),
+    )
+    for source_encoding, target_encoding in attempts:
+        try:
+            candidate = raw.encode(source_encoding).decode(target_encoding)
+        except Exception:
+            continue
+        if not candidate or candidate == raw:
+            continue
+        candidate_score = _text_quality_score(candidate)
+        if _repair_roundtrip_matches(raw, candidate, source_encoding, target_encoding):
+            candidate_score += 2.0
+        if candidate_score > best_score + 0.35:
+            best = candidate
+            best_score = candidate_score
+    return best
+
+
+def looks_like_mojibake(value: Any) -> bool:
+    raw = str(value or "")
+    if not raw.strip():
+        return False
+    if not _has_explicit_mojibake_markers(raw):
+        return False
+    if "\ufffd" in raw:
+        return True
+    repaired = repair_text_mojibake(raw)
+    return bool(repaired and repaired != raw)
+
+
+def normalize_education_level(value: Any) -> str | None:
+    raw = str(value or "")
+    if not raw.strip():
+        return None
+    for sample in _iter_text_variants(raw):
+        lowered = sample.lower()
+        if "博士" in sample or re.search(r"\b(phd|doctor(?:ate)?)\b", lowered):
+            return "博士"
+        if "硕士" in sample or re.search(r"\b(master(?:'s)?)\b", lowered):
+            return "硕士"
+        if "本科" in sample or re.search(r"\b(bachelor(?:'s)?|undergraduate)\b", lowered):
+            return "本科"
+        if any(token in sample for token in ("大专", "专科")) or re.search(r"\b(college|associate)\b", lowered):
+            return "大专"
+        if any(token in sample for token in ("高中", "中专")) or "high school" in lowered:
+            return "高中"
+    return None
+
+
 def extract_years_experience(text: str) -> float | None:
     candidates: list[float] = []
-    raw = str(text or "")
 
     # Prefer explicit experience fields first.
     explicit_patterns = (
@@ -213,24 +333,16 @@ def extract_years_experience(text: str) -> float | None:
         r"([零一二三四五六七八九十两\d]+(?:\.\d+)?)\s*年(?:工作)?经验",
         r"([零一二三四五六七八九十两\d]+(?:\.\d+)?)\s*年以上",
     )
-    for pattern in explicit_patterns:
-        for match in re.finditer(pattern, raw, flags=re.IGNORECASE):
-            token = match.group(1)
-            value = _parse_cn_number(token)
-            if value is not None and 0 <= value <= 40:
-                candidates.append(value)
+    for sample in _iter_text_variants(text):
+        for pattern in explicit_patterns:
+            for match in re.finditer(pattern, sample, flags=re.IGNORECASE):
+                token = match.group(1)
+                value = _parse_cn_number(token)
+                if value is not None and 0 <= value <= 40:
+                    candidates.append(value)
 
-    # OCR often merges list numbering with year text, e.g. "1.3年功能测试经验" -> "3年".
-    for match in re.finditer(r"(?:^|\n)\s*\d+\.(\d{1,2})\s*年(?:[^\n]{0,12}测试经验)?", raw):
-        try:
-            value = float(match.group(1))
-        except ValueError:
-            continue
-        if 0 <= value <= 40:
-            candidates.append(value)
-
-    if not candidates:
-        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:年(?:工作)?经验|年经验|年以上|年)", raw, flags=re.IGNORECASE):
+        # OCR often merges list numbering with year text, e.g. "1.3年功能测试经验" -> "3年".
+        for match in re.finditer(r"(?:^|\n)\s*\d+\.(\d{1,2})\s*年(?:[^\n]{0,12}测试经验)?", sample):
             try:
                 value = float(match.group(1))
             except ValueError:
@@ -238,14 +350,23 @@ def extract_years_experience(text: str) -> float | None:
             if 0 <= value <= 40:
                 candidates.append(value)
 
-    if not candidates:
-        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:years?|yrs?)(?:\s+of\s+experience)?", raw, flags=re.IGNORECASE):
-            try:
-                value = float(match.group(1))
-            except ValueError:
-                continue
-            if 0 <= value <= 40:
-                candidates.append(value)
+        if not candidates:
+            for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:年(?:工作)?经验|年经验|年以上|年)", sample, flags=re.IGNORECASE):
+                try:
+                    value = float(match.group(1))
+                except ValueError:
+                    continue
+                if 0 <= value <= 40:
+                    candidates.append(value)
+
+        if not candidates:
+            for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:years?|yrs?)(?:\s+of\s+experience)?", sample, flags=re.IGNORECASE):
+                try:
+                    value = float(match.group(1))
+                except ValueError:
+                    continue
+                if 0 <= value <= 40:
+                    candidates.append(value)
 
     if not candidates:
         return None
@@ -257,19 +378,18 @@ def extract_years_experience(text: str) -> float | None:
 
 
 def extract_age(text: str) -> int | None:
-    match = re.search(r"([1-6]\d)\s*岁", text)
-    return int(match.group(1)) if match else None
+    for sample in _iter_text_variants(text):
+        match = re.search(r"([1-6]\d)\s*(?:岁|歲|\s*years?\s*old|\s*y/o|\s*yo\b)", sample, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"\bage\s*[:：]?\s*([1-6]\d)\b", sample, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def extract_education_level(text: str) -> str | None:
-    for token in ("博士", "硕士", "本科", "大专", "专科", "高中"):
-        if token in text:
-            return token
-    lowered = text.lower()
-    for token in ("phd", "master", "bachelor", "college"):
-        if token in lowered:
-            return token
-    return None
+    return normalize_education_level(text)
 
 
 def extract_salary(text: str) -> str | None:

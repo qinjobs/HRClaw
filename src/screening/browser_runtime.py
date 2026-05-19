@@ -1400,6 +1400,130 @@ class PlaywrightBrowserRuntime:
                         best_score = score
         return best
 
+    def _has_recommend_resume_surface(self) -> bool:
+        if self._page is None:
+            return False
+        try:
+            if self._find_recommend_resume_iframe_target() is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            return self._has_recommend_resume_frame()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_canvas_only_resume_html(content_html: str | None) -> bool:
+        normalized = str(content_html or "").lower()
+        if not normalized or "<canvas" not in normalized:
+            return False
+        text_tags = ("<p", "<li", "<span", "<section", "<article", "<h1", "<h2", "<h3", "<h4", "<dl", "<dt", "<dd")
+        return not any(tag in normalized for tag in text_tags)
+
+    @staticmethod
+    def _is_recommend_overview_markup(selector: str | None = None, content_html: str | None = None) -> bool:
+        markers = (
+            "boss-popup__wrapper",
+            "boss-dialog__wrapper",
+            "dialog-lib-resume",
+            "recommendv2",
+            "lib-standard-resume",
+            "resume-right-side",
+            "resume-simple-box",
+            "resume-item-detail",
+            "resume-summary",
+        )
+        normalized_selector = re.sub(r"\s+", " ", str(selector or "")).strip().lower()
+        if normalized_selector and any(marker in normalized_selector for marker in markers):
+            return True
+        normalized_html = str(content_html or "").lower()
+        return bool(normalized_html) and any(marker in normalized_html for marker in markers)
+
+    @classmethod
+    def _looks_like_recommend_overview_text(cls, text: str | None) -> bool:
+        normalized = cls._cleanup_resume_text(text)
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if "经历概览" in normalized or "experience overview" in lowered:
+            return True
+        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+        if len(lines) < 3:
+            return False
+        long_lines = sum(1 for line in lines if len(line) >= 28)
+        date_like_lines = sum(
+            1
+            for line in lines
+            if re.search(r"(19|20)\d{2}", line)
+            and any(token in line.lower() for token in ("-", "/", ".", "至今", "present"))
+        )
+        return long_lines == 0 and date_like_lines >= max(2, len(lines) // 2)
+
+    def _sanitize_recommend_resume_target(self, target):
+        if target is None or not self._has_recommend_resume_surface():
+            return target
+        _root, locator, _metrics = target
+        try:
+            selector = locator.evaluate("(el) => `${el.className || ''} ${el.id || ''}`")
+        except Exception:
+            selector = ""
+        try:
+            content_html = locator.inner_html()
+        except Exception:
+            content_html = None
+        if self._is_recommend_overview_markup(selector, content_html):
+            return None
+        return target
+
+    def _extract_recommend_resume_iframe_payload(self) -> dict[str, Any] | None:
+        page = self._page
+        if page is None:
+            return None
+        best_payload: dict[str, Any] | None = None
+        best_score = float("-inf")
+        for frame in self._page_frames(page):
+            frame_url = self._frame_url_value(frame).lower()
+            if "/web/frame/c-resume/" not in frame_url and "/web/geek/job-recommend/" not in frame_url:
+                continue
+            page_text = ""
+            content_html = None
+            page_html = None
+            try:
+                body = frame.locator("body")
+                if body.count() > 0:
+                    page_text = self._cleanup_resume_text(body.first.inner_text())
+                    content_html = body.first.inner_html()
+            except Exception:
+                pass
+            try:
+                page_html = frame.content()
+            except Exception:
+                page_html = None
+            content_html = content_html or page_html
+            canvas_only = self._is_canvas_only_resume_html(content_html or page_html)
+            score = len(page_text)
+            if "/web/frame/c-resume/" in frame_url:
+                score += 10000
+            if "/web/geek/job-recommend/" in frame_url:
+                score += 2000
+            if canvas_only:
+                score += 500
+            elif content_html:
+                score += min(len(content_html), 4000)
+            payload = {
+                "detail_url": self.current_url,
+                "page_text": page_text,
+                "content_html": None if canvas_only else content_html,
+                "page_html": page_html,
+                "content_selector": "recommend_resume_iframe",
+                "_canvas_only": canvas_only,
+            }
+            if score > best_score:
+                best_payload = payload
+                best_score = score
+        return best_payload
+
     def _recommend_detail_state(self, selectors: BossSelectors) -> dict[str, Any]:
         try:
             active_dialog = self._active_recommend_dialog_locator()
@@ -2149,29 +2273,52 @@ class PlaywrightBrowserRuntime:
                 self._recommend_expected_card = None
                 return True
         if self._has_inline_recommend_detail(selectors):
-            try:
-                self.goto(selectors.recommend_url)
-                self.wait_for_recommend_list_ready(selectors, timeout_ms=10000)
-                cleared = not self._has_inline_recommend_detail(selectors)
-                if cleared:
-                    self._recommend_expected_card = None
-                return cleared
-            except Exception:
-                return False
+            # Avoid hard-refreshing the whole recommend page when the detail
+            # panel looks stuck. Let the caller decide how to recover so we do
+            # not disrupt the HR's current tab state with an unexpected reload.
+            return False
         cleared = not self._has_active_recommend_dialog()
         if cleared:
             self._recommend_expected_card = None
         return cleared
 
     def extract_recommend_detail_payload(self, selectors: BossSelectors) -> dict[str, Any]:
+        iframe_payload = self._extract_recommend_resume_iframe_payload()
+        iframe_text = self._cleanup_resume_text(iframe_payload.get("page_text")) if iframe_payload else ""
+        if iframe_text and not self._is_loading_resume_text(iframe_text):
+            preferred = dict(iframe_payload)
+            preferred["page_text"] = iframe_text
+            preferred.pop("_canvas_only", None)
+            if not preferred.get("detail_url"):
+                preferred["detail_url"] = self.current_url
+            return preferred
+
         detail = self.extract_detail_payload(selectors)
         detail_text = self._cleanup_resume_text(detail.get("page_text"))
-        if detail_text and not self._is_loading_resume_text(detail_text):
+        detail_markup_is_overview = self._is_recommend_overview_markup(
+            detail.get("content_selector"),
+            detail.get("content_html"),
+        )
+        if detail_text and not self._is_loading_resume_text(detail_text) and not self._looks_like_recommend_overview_text(
+            detail_text
+        ):
             normalized = dict(detail)
             normalized["page_text"] = detail_text
+            if iframe_payload is not None and detail_markup_is_overview:
+                normalized["content_html"] = iframe_payload.get("content_html")
+                normalized["page_html"] = iframe_payload.get("page_html")
+                normalized["content_selector"] = iframe_payload.get("content_selector")
             if not normalized.get("detail_url"):
                 normalized["detail_url"] = self.current_url
             return normalized
+
+        if iframe_payload is not None:
+            fallback = dict(iframe_payload)
+            fallback["page_text"] = iframe_text or ""
+            fallback.pop("_canvas_only", None)
+            if not fallback.get("detail_url"):
+                fallback["detail_url"] = self.current_url
+            return fallback
 
         active_dialog = self._active_recommend_dialog_locator()
         if active_dialog is not None:
@@ -3112,6 +3259,8 @@ class PlaywrightBrowserRuntime:
             "tool",
         )
         for node in list(root.iter()):
+            if not isinstance(getattr(node, "tag", None), str):
+                continue
             class_id = " ".join(
                 str(node.attrib.get(key, "")).lower()
                 for key in ("class", "id", "data-role", "data-name")
@@ -3605,10 +3754,10 @@ class PlaywrightBrowserRuntime:
     def _find_resume_content_target(self, selectors: BossSelectors | None = None):
         page = self._require_page()
         roots = [page, *page.frames]
-        dynamic_target = self._find_dynamic_resume_target(roots)
+        dynamic_target = self._sanitize_recommend_resume_target(self._find_dynamic_resume_target(roots))
         if dynamic_target is not None:
             return dynamic_target
-        dialog_target = self._find_resume_dialog_panel_target()
+        dialog_target = self._sanitize_recommend_resume_target(self._find_resume_dialog_panel_target())
         if dialog_target is not None:
             return dialog_target
         expected_name = self._recommend_expected_name_hint()
@@ -3683,7 +3832,7 @@ class PlaywrightBrowserRuntime:
                     if score > best_score:
                         best = (root, candidate, metrics)
                         best_score = score
-        return best
+        return self._sanitize_recommend_resume_target(best)
 
     def _find_resume_dialog_panel_target(self) -> tuple[object, object, dict[str, float]] | None:
         active_dialog = self._active_recommend_dialog_locator()

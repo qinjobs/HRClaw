@@ -17,6 +17,9 @@ from .candidate_heuristics import (
     extract_salary,
     extract_years_experience,
     infer_candidate_item,
+    looks_like_mojibake,
+    normalize_education_level,
+    repair_text_mojibake,
 )
 from .config import load_local_env
 from .gpt_extractor import GPTFieldExtractor
@@ -74,11 +77,65 @@ class PlaywrightLocalAgent:
 
     @staticmethod
     def _preferred_candidate_name(extracted_name: Any, fallback_name: Any) -> str | None:
-        extracted = str(extracted_name or "").strip()
-        if extracted and extracted.lower() not in {"null", "none"} and extracted not in {"未提供", "未知", "匿名", "N/A", "NA", "-"}:
+        extracted = PlaywrightLocalAgent._normalized_text(extracted_name)
+        if extracted and extracted.lower() not in {"null", "none"} and extracted not in {"未提供", "未知", "匿名", "N/A", "NA", "-"} and not looks_like_mojibake(extracted_name):
             return extracted
-        fallback = str(fallback_name or "").strip()
+        fallback = PlaywrightLocalAgent._normalized_text(fallback_name)
         return fallback or extracted or None
+
+    @staticmethod
+    def _normalized_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        repaired = repair_text_mojibake(value)
+        text = str(repaired or "").strip()
+        if not text:
+            return None
+        if text.lower() in {"null", "none", "n/a", "na", "-"}:
+            return None
+        return text
+
+    @staticmethod
+    def _preferred_text_field(extracted_value: Any, fallback_value: Any, *, normalize_education: bool = False) -> str | None:
+        raw_extracted = str(extracted_value or "").strip()
+        if normalize_education:
+            extracted = normalize_education_level(extracted_value)
+            fallback = normalize_education_level(fallback_value)
+        else:
+            extracted = PlaywrightLocalAgent._normalized_text(extracted_value)
+            fallback = PlaywrightLocalAgent._normalized_text(fallback_value)
+        if fallback and "\ufffd" in raw_extracted:
+            return fallback
+        if fallback and raw_extracted and looks_like_mojibake(extracted_value):
+            if extracted and "\ufffd" not in extracted:
+                return extracted
+            return fallback
+        return extracted or fallback
+
+    @staticmethod
+    def _preferred_resume_summary(*values: Any) -> str | None:
+        best_text: str | None = None
+        best_score = float("-inf")
+        for value in values:
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            text = PlaywrightLocalAgent._normalized_text(value)
+            if not text:
+                continue
+            score = float(len(text))
+            if looks_like_mojibake(raw):
+                score -= 500.0
+            if "\ufffd" in raw:
+                score -= 1000.0
+            if re.search(r"[\u4e00-\u9fff]{4,}", text):
+                score += 120.0
+            if re.search(r"[A-Za-z]{4,}", text):
+                score += 40.0
+            if score > best_score:
+                best_score = score
+                best_text = text
+        return best_text
 
     @staticmethod
     def _recommend_card_has_identity(card: dict[str, Any]) -> bool:
@@ -239,10 +296,28 @@ class PlaywrightLocalAgent:
                 extraction_error = str(exc)
                 extraction_usage = getattr(self.extractor, "last_usage", None)
             item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
+            resolved_item = dict(item)
+            resolved_item["name"] = self._preferred_candidate_name(item.get("name"), card.get("name"))
+            resolved_item["education_level"] = self._preferred_text_field(
+                item.get("education_level"),
+                card.get("education_level") or extract_education_level(merged_text),
+                normalize_education=True,
+            )
+            resolved_item["current_company"] = self._preferred_text_field(item.get("current_company"), card.get("current_company"))
+            resolved_item["current_title"] = self._preferred_text_field(item.get("current_title"), card.get("current_title"))
+            resolved_item["location"] = self._preferred_text_field(item.get("location"), card.get("location"))
+            resolved_item["last_active_time"] = self._preferred_text_field(item.get("last_active_time"), card.get("last_active_time"))
+            resolved_item["major"] = self._normalized_text(item.get("major"))
+            resolved_item["resume_summary"] = self._preferred_resume_summary(
+                item.get("resume_summary"),
+                detail.get("page_text"),
+                card.get("summary_text"),
+                merged_text,
+            )
             resume_artifacts = self._safe_persist_resume_artifacts(
                 card.get("external_id") or f"{job_id}_candidate_{index}",
                 detail.get("page_text") or merged_text,
-                title=item.get("current_title") or card.get("current_title") or card.get("name"),
+                title=resolved_item.get("current_title") or card.get("current_title") or card.get("name"),
                 source_url=detail.get("detail_url") or card.get("detail_url"),
                 label=f"{job_id}_candidate_{index}",
                 content_html=detail.get("content_html"),
@@ -250,28 +325,28 @@ class PlaywrightLocalAgent:
             )
             normalized_fields = self._build_score_fields(
                 item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
-                item=item,
+                item=resolved_item,
                 card=card,
                 detail=detail,
                 merged_text=merged_text,
                 years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
-                education_level=item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
+                education_level=resolved_item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
             )
             candidates.append(
                 CandidateExtract(
                     external_id=card.get("external_id")
                     or _extract_external_id(detail.get("detail_url"), index, merged_text),
-                    name=self._preferred_candidate_name(item.get("name"), card.get("name")),
+                    name=resolved_item.get("name"),
                     age=item.get("age") or extract_age(merged_text),
-                    education_level=item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
-                    major=item.get("major"),
+                    education_level=resolved_item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
+                    major=resolved_item.get("major"),
                     years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
-                    current_company=item.get("current_company") or card.get("current_company"),
-                    current_title=item.get("current_title") or card.get("current_title"),
+                    current_company=resolved_item.get("current_company") or card.get("current_company"),
+                    current_title=resolved_item.get("current_title") or card.get("current_title"),
                     expected_salary=item.get("expected_salary") or extract_salary(merged_text),
-                    location=item.get("location") or card.get("location"),
-                    last_active_time=item.get("last_active_time") or card.get("last_active_time"),
-                    raw_summary=item.get("resume_summary") or detail.get("page_text") or card.get("summary_text"),
+                    location=resolved_item.get("location") or card.get("location"),
+                    last_active_time=resolved_item.get("last_active_time") or card.get("last_active_time"),
+                    raw_summary=resolved_item.get("resume_summary") or detail.get("page_text") or card.get("summary_text"),
                     normalized_fields=normalized_fields,
                     evidence_map={
                         "list_summary": card.get("summary_text"),
@@ -491,10 +566,28 @@ class PlaywrightLocalAgent:
                         extraction_error = str(exc)
                         extraction_usage = getattr(self.extractor, "last_usage", None)
                     item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
+                    resolved_item = dict(item)
+                    resolved_item["name"] = self._preferred_candidate_name(item.get("name"), target_card.get("name"))
+                    resolved_item["education_level"] = self._preferred_text_field(
+                        item.get("education_level"),
+                        target_card.get("education_level") or extract_education_level(merged_text),
+                        normalize_education=True,
+                    )
+                    resolved_item["current_company"] = self._preferred_text_field(item.get("current_company"), target_card.get("current_company"))
+                    resolved_item["current_title"] = self._preferred_text_field(item.get("current_title"), target_card.get("current_title"))
+                    resolved_item["location"] = self._preferred_text_field(item.get("location"), target_card.get("location"))
+                    resolved_item["last_active_time"] = self._preferred_text_field(item.get("last_active_time"), target_card.get("last_active_time"))
+                    resolved_item["major"] = self._normalized_text(item.get("major"))
+                    resolved_item["resume_summary"] = self._preferred_resume_summary(
+                        item.get("resume_summary"),
+                        detail.get("page_text"),
+                        target_card.get("summary_text"),
+                        merged_text,
+                    )
                     resume_artifacts = self._safe_persist_resume_artifacts(
                         target_card.get("external_id") or f"candidate-{candidate_index}",
                         detail.get("page_text") or merged_text,
-                        title=item.get("current_title") or target_card.get("current_title") or target_card.get("name"),
+                        title=resolved_item.get("current_title") or target_card.get("current_title") or target_card.get("name"),
                         source_url=detail.get("detail_url") or target_card.get("detail_url"),
                         label=f"{job_id}_candidate_{candidate_index}",
                         content_html=detail.get("content_html"),
@@ -504,12 +597,10 @@ class PlaywrightLocalAgent:
                     years_experience = target_card.get("years_experience") or extract_years_experience(merged_text)
                     if item.get("years_experience"):
                         years_experience = item.get("years_experience")
-                    education_level = target_card.get("education_level") or extract_education_level(merged_text)
-                    if item.get("education_level"):
-                        education_level = item.get("education_level")
+                    education_level = resolved_item.get("education_level") or target_card.get("education_level") or extract_education_level(merged_text)
                     normalized_fields = self._build_score_fields(
                         item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
-                        item=item,
+                        item=resolved_item,
                         card=target_card,
                         detail=detail,
                         merged_text=merged_text,
@@ -541,17 +632,17 @@ class PlaywrightLocalAgent:
                     current_candidate = CandidateExtract(
                         external_id=target_card.get("external_id")
                         or _extract_external_id(detail.get("detail_url"), candidate_index, merged_text),
-                        name=self._preferred_candidate_name(item.get("name"), target_card.get("name")),
+                        name=resolved_item.get("name"),
                         age=item.get("age") or extract_age(merged_text),
                         education_level=education_level,
-                        major=item.get("major"),
+                        major=resolved_item.get("major"),
                         years_experience=years_experience,
-                        current_company=item.get("current_company") or target_card.get("current_company"),
-                        current_title=item.get("current_title") or target_card.get("current_title"),
+                        current_company=resolved_item.get("current_company") or target_card.get("current_company"),
+                        current_title=resolved_item.get("current_title") or target_card.get("current_title"),
                         expected_salary=item.get("expected_salary") or extract_salary(merged_text),
-                        location=item.get("location") or target_card.get("location"),
-                        last_active_time=item.get("last_active_time") or target_card.get("last_active_time"),
-                        raw_summary=item.get("resume_summary") or detail.get("page_text") or target_card.get("summary_text"),
+                        location=resolved_item.get("location") or target_card.get("location"),
+                        last_active_time=resolved_item.get("last_active_time") or target_card.get("last_active_time"),
+                        raw_summary=resolved_item.get("resume_summary") or detail.get("page_text") or target_card.get("summary_text"),
                         normalized_fields=normalized_fields,
                         evidence_map={
                             "flow_mode": "recommend",

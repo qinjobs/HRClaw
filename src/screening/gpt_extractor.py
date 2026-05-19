@@ -10,11 +10,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None
+
+try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - optional dependency
     OpenAI = None
 
-from .candidate_heuristics import build_fallback_normalized_fields, has_qa_testing_evidence
+from .candidate_heuristics import (
+    build_fallback_normalized_fields,
+    has_qa_testing_evidence,
+    normalize_education_level,
+    repair_text_mojibake,
+)
 from .config import load_local_env
 from .prompts import FIELD_EXTRACTION_PROMPT, build_local_extraction_prompt
 
@@ -200,72 +210,84 @@ class GPTFieldExtractor:
         raise RuntimeError(self._normalize_provider_error(last_error)) from last_error
 
     def _extract_with_kimi_cli(self, job_id: str, page_text: str) -> dict[str, Any]:
-        command = self._kimi_cli_command_tokens()
-        if not command:
-            raise RuntimeError("SCREENING_KIMI_CLI_COMMAND is empty.")
-        if self.model and "--model" not in command and "-m" not in command:
-            command.extend(["--model", self.model])
-        effective_config = self._effective_kimi_cli_config()
-        if effective_config:
-            command.extend(["--config", effective_config])
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                command = self._kimi_cli_command_tokens()
+                if not command:
+                    raise RuntimeError("SCREENING_KIMI_CLI_COMMAND is empty.")
+                effective_config = self._effective_kimi_cli_config()
+                effective_model = self._effective_kimi_cli_model(effective_config)
+                if effective_model and "--model" not in command and "-m" not in command:
+                    command.extend(["--model", effective_model])
+                if effective_config:
+                    command.extend(["--config", effective_config])
 
-        system_prompt = FIELD_EXTRACTION_PROMPT
-        user_prompt = build_local_extraction_prompt(job_id, page_text)
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+                system_prompt = FIELD_EXTRACTION_PROMPT
+                user_prompt = build_local_extraction_prompt(job_id, page_text)
+                full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
-        stdin_input = None
-        if self.kimi_cli_prompt_arg_template:
-            if "--prompt" not in command and "-p" not in command and "--command" not in command and "-c" not in command:
-                command.append("--prompt")
-            command.append(self.kimi_cli_prompt_arg_template.format(prompt=full_prompt, job_id=job_id))
-        else:
-            stdin_input = full_prompt
-            if self.kimi_cli_send_exit:
-                stdin_input += "\n/exit\n"
-            else:
-                stdin_input += "\n"
+                stdin_input = None
+                if self.kimi_cli_prompt_arg_template:
+                    if "--prompt" not in command and "-p" not in command and "--command" not in command and "-c" not in command:
+                        command.append("--prompt")
+                    command.append(self.kimi_cli_prompt_arg_template.format(prompt=full_prompt, job_id=job_id))
+                else:
+                    stdin_input = full_prompt
+                    if self.kimi_cli_send_exit:
+                        stdin_input += "\n/exit\n"
+                    else:
+                        stdin_input += "\n"
 
-        completed = self._cli_runner(
-            command,
-            input=stdin_input,
-            text=True,
-            capture_output=True,
-            timeout=self.cli_timeout_seconds,
-            env={**os.environ, "NO_COLOR": "1"},
-        )
+                completed = self._cli_runner(
+                    command,
+                    input=stdin_input,
+                    text=True,
+                    capture_output=True,
+                    timeout=self.cli_timeout_seconds,
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**os.environ, "NO_COLOR": "1"},
+                )
 
-        stdout = (completed.stdout or "").strip()
-        stderr = (completed.stderr or "").strip()
-        if completed.returncode != 0 and not stdout:
-            detail = stderr or "no stderr output"
-            raise RuntimeError(self._normalize_provider_error(detail))
+                stdout = (completed.stdout or "").strip()
+                stderr = (completed.stderr or "").strip()
+                if completed.returncode != 0 and not stdout:
+                    detail = stderr or "no stderr output"
+                    raise RuntimeError(self._normalize_provider_error(detail))
 
-        payload = self._parse_kimi_cli_payload(stdout)
-        if payload is None:
-            detail = stderr or stdout[:500] or "empty output"
-            raise RuntimeError(self._normalize_provider_error(detail))
+                payload = self._parse_kimi_cli_payload(stdout)
+                if payload is None:
+                    detail = stderr or stdout[:500] or "empty output"
+                    raise RuntimeError(self._normalize_provider_error(detail))
 
-        if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
-            raise RuntimeError(self._normalize_provider_error(payload["error"]))
+                if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+                    raise RuntimeError(self._normalize_provider_error(payload["error"]))
 
-        usage = payload.get("usage") if isinstance(payload, dict) else None
-        if isinstance(usage, dict):
-            self.last_usage = self._normalize_usage(usage)
-        else:
-            self.last_usage = {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "model": self.model,
-                "provider": "kimi_cli",
-            }
+                usage = payload.get("usage") if isinstance(payload, dict) else None
+                if isinstance(usage, dict):
+                    self.last_usage = self._normalize_usage(usage)
+                else:
+                    self.last_usage = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "model": self.model,
+                        "provider": "kimi_cli",
+                    }
 
-        if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
-            payload = payload["result"]
-        elif isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-            payload = payload["data"]
+                if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+                    payload = payload["result"]
+                elif isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+                    payload = payload["data"]
 
-        return self._validate_payload_obj(payload)
+                return self._validate_payload_obj(payload)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(self.retry_delay_ms / 1000)
+        raise RuntimeError(self._normalize_provider_error(last_error)) from last_error
 
     def merge_with_fallback(self, job_id: str, extracted: dict[str, Any], fallback_item: dict[str, Any]) -> dict[str, Any]:
         merged = dict(extracted or {})
@@ -320,7 +342,36 @@ class GPTFieldExtractor:
         if normalized_fields is None:
             payload["normalized_fields"] = {}
 
+        for scalar_key in (
+            "name",
+            "education_level",
+            "major",
+            "current_company",
+            "current_title",
+            "expected_salary",
+            "location",
+            "last_active_time",
+        ):
+            payload[scalar_key] = GPTFieldExtractor._sanitize_scalar_field(scalar_key, payload.get(scalar_key))
+
         return payload
+
+    @staticmethod
+    def _sanitize_scalar_field(field_name: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if field_name == "education_level":
+            normalized = normalize_education_level(text)
+            if normalized:
+                return normalized
+        repaired = repair_text_mojibake(text)
+        repaired_text = str(repaired or "").strip()
+        return repaired_text or text
 
     def _kimi_cli_command_tokens(self) -> list[str]:
         command = shlex.split(self.kimi_cli_command) if self.kimi_cli_command else []
@@ -369,21 +420,59 @@ class GPTFieldExtractor:
             normalized = self._normalize_kimi_cli_config(self.kimi_cli_config)
             if normalized:
                 return normalized
-        if not self.kimi_cli_api_key:
+        if self.kimi_cli_api_key:
+            return self._build_kimi_cli_config(self.kimi_cli_api_key, self.kimi_cli_base_url, self.model)
+        default_config = self._load_default_kimi_cli_config()
+        if default_config:
+            return default_config
+        return ""
+
+    def _load_default_kimi_cli_config(self) -> str:
+        default_path = Path.home() / ".kimi" / "config.toml"
+        if not default_path.exists():
             return ""
-        return self._build_kimi_cli_config(self.kimi_cli_api_key, self.kimi_cli_base_url, self.model)
+        try:
+            raw = default_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raw = default_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return self._normalize_kimi_cli_config(raw)
+
+    def _effective_kimi_cli_model(self, config_text: str | None = None) -> str | None:
+        requested = str(self.model or "").strip()
+        parsed = self._parse_kimi_cli_config_text(config_text or "")
+        if not isinstance(parsed, dict):
+            return requested or None
+
+        default_model = str(parsed.get("default_model") or "").strip()
+        models = parsed.get("models")
+        if isinstance(models, dict):
+            if requested and requested in models:
+                return requested
+            if requested:
+                for key, item in models.items():
+                    key_text = str(key or "").strip()
+                    if not key_text:
+                        continue
+                    model_name = ""
+                    if isinstance(item, dict):
+                        model_name = str(item.get("model") or "").strip()
+                    if requested == key_text or requested == model_name or requested == key_text.rsplit("/", 1)[-1]:
+                        return key_text
+            if default_model:
+                return default_model
+        if default_model:
+            return default_model
+        return requested or None
 
     def _normalize_kimi_cli_config(self, raw_config: str) -> str:
         text = (raw_config or "").strip()
         if not text:
             return ""
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            # Keep raw config for non-JSON formats (e.g. TOML) provided by user.
-            return text
-
+        parsed = self._parse_kimi_cli_config_text(text)
         if not isinstance(parsed, dict):
+            # Keep raw config for non-JSON/TOML formats provided by user.
             return text
 
         # Already complete.
@@ -418,6 +507,22 @@ class GPTFieldExtractor:
             return self._build_kimi_cli_config(self.kimi_cli_api_key, self.kimi_cli_base_url, self.model)
 
         return text
+
+    @staticmethod
+    def _parse_kimi_cli_config_text(text: str) -> dict[str, Any] | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            if tomllib is None:
+                return None
+            try:
+                parsed = tomllib.loads(raw)
+            except Exception:
+                return None
+        return parsed if isinstance(parsed, dict) else None
 
     @staticmethod
     def _build_kimi_cli_config(api_key: str, base_url: str | None, model_name: str | None) -> str:

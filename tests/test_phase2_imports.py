@@ -63,6 +63,32 @@ class PaddleOCRBackendTests(unittest.TestCase):
         self.assertEqual(flags[1], "0")
         self.assertEqual(flags[2], "0")
 
+    def test_apply_runtime_compat_flags_sets_project_cache_home_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            expected_cache = Path(tmpdir) / "ocr-cache"
+            with mock.patch.dict(
+                os.environ,
+                {"SCREENING_RESUME_OCR_CACHE_DIR": str(expected_cache)},
+                clear=True,
+            ):
+                backend = PaddleOCRBackend()
+                backend._apply_runtime_compat_flags()
+                self.assertEqual(os.getenv("PADDLE_PDX_CACHE_HOME"), str(expected_cache))
+                self.assertTrue(expected_cache.exists())
+
+    def test_apply_runtime_compat_flags_preserves_explicit_paddlex_cache_home(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit_cache = Path(tmpdir) / "explicit-cache"
+            explicit_cache.mkdir(parents=True, exist_ok=True)
+            with mock.patch.dict(
+                os.environ,
+                {"PADDLE_PDX_CACHE_HOME": str(explicit_cache)},
+                clear=True,
+            ):
+                backend = PaddleOCRBackend()
+                backend._apply_runtime_compat_flags()
+                self.assertEqual(os.getenv("PADDLE_PDX_CACHE_HOME"), str(explicit_cache))
+
 
 if __name__ == "__main__":
     unittest.main()

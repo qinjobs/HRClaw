@@ -316,6 +316,17 @@ class NullNameExtractor(FakeExtractor):
         return {"name": "null"}
 
 
+class GarbledStructuredFieldExtractor(FakeExtractor):
+    def extract_candidate(self, job_id, page_text, screenshot_base64):
+        return {
+            "name": "候选人A",
+            "education_level": "˶ʿ",
+            "location": "\ufffd\ufffd",
+            "current_title": "\ufffd\ufffd",
+            "resume_summary": "\ufffd\ufffd",
+        }
+
+
 class RecommendFlowTests(unittest.TestCase):
     def _selectors(self):
         return BossSelectors(
@@ -484,6 +495,38 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertTrue(items[0].evidence_map["auto_greet_attempted"])
         self.assertTrue(items[0].evidence_map["auto_greet_clicked"])
         self.assertEqual(runtime.greet_clicks, 1)
+
+    def test_recommend_flow_prefers_repaired_education_and_readable_summary(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards[0].update(
+            {
+                "name": "李鑫",
+                "current_title": "产品经理",
+                "current_company": "深圳小亿网络有限公司",
+                "education_level": "本科",
+                "location": "深圳",
+                "summary_text": "李鑫 28岁 硕士 6年 深圳 产品经理",
+            }
+        )
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=GarbledStructuredFieldExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_ENABLED": "false"}):
+            agent.start_session()
+            items = agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                max_pages=1,
+            )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].education_level, "硕士")
+        self.assertEqual(items[0].location, "深圳")
+        self.assertEqual(items[0].current_title, "产品经理")
+        self.assertNotIn("\ufffd", items[0].raw_summary or "")
 
     def test_recommend_flow_auto_greet_ignores_decision_when_score_above_threshold(self):
         runtime = FakeRecommendRuntime()

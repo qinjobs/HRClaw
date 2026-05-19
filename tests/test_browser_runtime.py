@@ -2088,7 +2088,7 @@ class BrowserRuntimeConfigTests(unittest.TestCase):
         page.keyboard.press.assert_not_called()
         goto_mock.assert_not_called()
 
-    def test_close_recommend_detail_resets_stale_inline_resume_state(self):
+    def test_close_recommend_detail_reports_stale_inline_resume_state_without_reloading(self):
         runtime = PlaywrightBrowserRuntime()
         selectors = BossSelectors(
             search_url="https://www.zhipin.com/web/chat/search",
@@ -2122,22 +2122,17 @@ class BrowserRuntimeConfigTests(unittest.TestCase):
         ), mock.patch.object(
             runtime,
             "_has_inline_recommend_detail",
-            side_effect=[True, True, True, True, True, True, True, False],
+            side_effect=[True, True, True, True, True, True, True],
         ), mock.patch.object(
             runtime,
             "goto",
             return_value=selectors.recommend_url,
-        ) as goto_mock, mock.patch.object(
-            runtime,
-            "wait_for_recommend_list_ready",
-            return_value={"card_count": 15},
-        ) as wait_mock:
+        ) as goto_mock:
             result = runtime.close_recommend_detail(selectors)
 
-        self.assertTrue(result)
+        self.assertFalse(result)
         self.assertEqual(page.keyboard.press.call_count, 3)
-        goto_mock.assert_called_once_with(selectors.recommend_url)
-        wait_mock.assert_called_once_with(selectors, timeout_ms=10000)
+        goto_mock.assert_not_called()
 
     def test_click_recommend_greet_supports_resume_greet_container(self):
         runtime = PlaywrightBrowserRuntime()
@@ -2675,6 +2670,14 @@ class BrowserRuntimeMarkdownTests(unittest.TestCase):
         body = runtime._build_resume_markdown_body("收藏\n举报\n本科\n3年经验")
         self.assertEqual(body, "本科\n3年经验")
 
+    def test_clean_resume_html_fragment_ignores_html_comments(self):
+        runtime = PlaywrightBrowserRuntime()
+        cleaned = runtime._clean_resume_html_fragment(
+            '<div><!-- sticky comment --><section class="resume-detail-wrap"><p>产品经理</p><button>打招呼</button></section></div>'
+        )
+        self.assertIn("产品经理", cleaned)
+        self.assertNotIn("打招呼", cleaned)
+
     def test_extract_recommend_detail_payload_prefers_full_detail_payload(self):
         runtime = PlaywrightBrowserRuntime()
         dialog_root = mock.Mock()
@@ -2726,6 +2729,77 @@ class BrowserRuntimeMarkdownTests(unittest.TestCase):
 
         self.assertEqual(payload["page_text"], "完整简历正文\n1、负责产品规划\n2、负责需求分析")
         self.assertEqual(payload["detail_url"], "https://www.zhipin.com/web/chat/recommend")
+
+    def test_extract_recommend_detail_payload_prefers_resume_iframe_text_when_available(self):
+        runtime = PlaywrightBrowserRuntime()
+        with mock.patch.object(
+            runtime,
+            "_extract_recommend_resume_iframe_payload",
+            return_value={
+                "detail_url": "https://www.zhipin.com/web/chat/recommend",
+                "page_text": "Full resume body\nLed roadmap planning\nOwned experiment delivery",
+                "content_html": "<div><p>Full resume body</p><p>Led roadmap planning</p></div>",
+                "page_html": "<html><body><div>Full resume body</div></body></html>",
+                "content_selector": "recommend_resume_iframe",
+                "_canvas_only": False,
+            },
+        ), mock.patch.object(
+            runtime,
+            "extract_detail_payload",
+            return_value={
+                "detail_url": "https://www.zhipin.com/web/chat/recommend",
+                "page_text": "2023-01 - 2024-02\nProduct Manager",
+                "content_html": "<div class='resume-right-side'>overview only</div>",
+                "page_html": "<html></html>",
+                "content_selector": "boss-popup__wrapper dialog-lib-resume recommendV2",
+            },
+        ):
+            payload = runtime.extract_recommend_detail_payload(mock.Mock())
+
+        self.assertEqual(payload["page_text"], "Full resume body\nLed roadmap planning\nOwned experiment delivery")
+        self.assertEqual(payload["content_selector"], "recommend_resume_iframe")
+
+    def test_extract_recommend_detail_payload_ignores_overview_wrapper_when_resume_iframe_is_canvas_only(self):
+        runtime = PlaywrightBrowserRuntime()
+        with mock.patch.object(
+            runtime,
+            "_extract_recommend_resume_iframe_payload",
+            return_value={
+                "detail_url": "https://www.zhipin.com/web/chat/recommend",
+                "page_text": "",
+                "content_html": None,
+                "page_html": "<html><body><div id='resume'><canvas id='resume'></canvas></div></body></html>",
+                "content_selector": "recommend_resume_iframe",
+                "_canvas_only": True,
+            },
+        ), mock.patch.object(
+            runtime,
+            "extract_detail_payload",
+            return_value={
+                "detail_url": "https://www.zhipin.com/web/chat/recommend",
+                "page_text": "2023-01 - 2024-02\nProduct Manager\n2021-01 - 2022-12\nAnalyst",
+                "content_html": "<div class='resume-right-side'><div class='resume-summary'>overview only</div></div>",
+                "page_html": "<html></html>",
+                "content_selector": "boss-popup__wrapper dialog-lib-resume recommendV2",
+            },
+        ):
+            payload = runtime.extract_recommend_detail_payload(mock.Mock())
+
+        self.assertEqual(payload["page_text"], "")
+        self.assertEqual(payload["content_selector"], "recommend_resume_iframe")
+        self.assertIsNone(payload["content_html"])
+
+    def test_sanitize_recommend_resume_target_rejects_overview_wrapper_when_resume_iframe_present(self):
+        runtime = PlaywrightBrowserRuntime()
+        locator = mock.Mock()
+        locator.evaluate.return_value = "boss-popup__wrapper dialog-lib-resume recommendV2"
+        locator.inner_html.return_value = "<div class='resume-right-side'><div class='resume-summary'>overview</div></div>"
+        target = (mock.Mock(), locator, {"client_height": 320, "scroll_height": 960})
+
+        with mock.patch.object(runtime, "_has_recommend_resume_surface", return_value=True):
+            sanitized = runtime._sanitize_recommend_resume_target(target)
+
+        self.assertIsNone(sanitized)
 
     def test_resume_content_bonus_prefers_resume_panel_over_related_candidates(self):
         resume_score = PlaywrightBrowserRuntime._resume_content_bonus(

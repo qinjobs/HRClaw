@@ -14,9 +14,11 @@ BUNDLE_SCRIPT = ROOT / "scripts" / "build_windows_offline_bundle.sh"
 class WindowsInstallScriptTests(unittest.TestCase):
     def test_common_script_can_resolve_existing_python312(self):
         common_script = COMMON_PS1.read_text(encoding="utf-8")
+        self.assertIn("function Try-GetInstallRoot", common_script)
         self.assertIn("function Resolve-SystemPython312", common_script)
         self.assertIn("function Test-PythonVersionMatch", common_script)
         self.assertIn("Python312", common_script)
+        self.assertIn('Programs\\Python\\Launcher\\py.exe', common_script)
 
     def test_install_script_reuses_existing_python_when_installer_returns_1638(self):
         install_script = INSTALL_PS1.read_text(encoding="utf-8")
@@ -67,6 +69,7 @@ class WindowsInstallScriptTests(unittest.TestCase):
 
     def test_windows_start_server_launches_visible_chrome_recommend_page(self):
         start_server_script = START_SERVER_PS1.read_text(encoding="utf-8")
+        self.assertIn("Try-GetInstallRoot", start_server_script)
         self.assertIn('https://www.zhipin.com/web/chat/recommend', start_server_script)
         self.assertIn('"--new-window"', start_server_script)
         self.assertIn('"--no-first-run"', start_server_script)

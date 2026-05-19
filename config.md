@@ -1,7 +1,7 @@
 # Shell env config (can be sourced directly)
 export SCREENING_EXTRACTION_PROVIDER=kimi_cli
 export SCREENING_EXTRACTION_MODEL=kimi-for-coding
-export SCREENING_KIMI_CLI_COMMAND=/Users/jobs/.local/bin/kimi
+export SCREENING_KIMI_CLI_COMMAND=kimi
 export SCREENING_KIMI_CLI_ARGS="--print --output-format text --final-message-only"
 export SCREENING_KIMI_CLI_TIMEOUT_SECONDS=180
 export SCREENING_AUTO_GREET_THRESHOLD=90

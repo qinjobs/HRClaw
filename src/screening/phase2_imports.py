@@ -196,7 +196,22 @@ class PaddleOCRBackend:
             return True
         return self._compat_retry_active
 
+    def _default_paddlex_cache_home(self) -> Path:
+        configured = str(os.getenv("SCREENING_RESUME_OCR_CACHE_DIR", "") or "").strip()
+        if configured:
+            return Path(configured)
+        return Path(__file__).resolve().parents[2] / "data" / "paddlex_cache"
+
+    def _ensure_paddlex_cache_home(self) -> None:
+        existing = str(os.getenv("PADDLE_PDX_CACHE_HOME", "") or "").strip()
+        if existing:
+            return
+        cache_dir = self._default_paddlex_cache_home()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_dir))
+
     def _apply_runtime_compat_flags(self) -> None:
+        self._ensure_paddlex_cache_home()
         is_windows = os.name == "nt"
         disable_onednn_default = is_windows
         disable_pir_default = is_windows

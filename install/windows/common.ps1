@@ -41,15 +41,19 @@ function Get-ProjectRoot {
 }
 
 function Get-InstallRoot {
-  $resolved = Find-AncestorWithPaths -StartPath $PSScriptRoot -RelativePaths @(
-    "packages\windows\admin_frontend-dist.zip",
-    "packages\windows\.env.local.example",
-    "packages\frontend\admin_frontend-dist.tgz"
-  )
+  $resolved = Try-GetInstallRoot
   if ($resolved) {
     return $resolved
   }
   throw "cannot locate install packages. Please extract the full project folder so packages\windows is available."
+}
+
+function Try-GetInstallRoot {
+  return (Find-AncestorWithPaths -StartPath $PSScriptRoot -RelativePaths @(
+    "packages\windows\admin_frontend-dist.zip",
+    "packages\windows\.env.local.example",
+    "packages\frontend\admin_frontend-dist.tgz"
+  ))
 }
 
 function Write-Stage {
@@ -173,14 +177,31 @@ function Test-PythonVersionMatch {
 }
 
 function Resolve-SystemPython312 {
+  $launcherCandidates = [System.Collections.Generic.List[string]]::new()
   try {
     $pyLauncher = Get-Command py -ErrorAction Stop
-    $resolvedFromLauncher = Test-PythonVersionMatch -CommandPath $pyLauncher.Source -Arguments @("-3.12")
-    if ($resolvedFromLauncher) {
-      return $resolvedFromLauncher
+    if ($pyLauncher -and $pyLauncher.Source) {
+      $launcherCandidates.Add($pyLauncher.Source)
     }
   } catch {
     # ignore
+  }
+
+  if ($env:LOCALAPPDATA) {
+    $launcherCandidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Launcher\py.exe"))
+  }
+  if ($env:ProgramFiles) {
+    $launcherCandidates.Add((Join-Path $env:ProgramFiles "Python Launcher\py.exe"))
+  }
+  if (${env:ProgramFiles(x86)}) {
+    $launcherCandidates.Add((Join-Path ${env:ProgramFiles(x86)} "Python Launcher\py.exe"))
+  }
+
+  foreach ($launcherPath in ($launcherCandidates | Where-Object { $_ } | Select-Object -Unique)) {
+    $resolvedFromLauncher = Test-PythonVersionMatch -CommandPath $launcherPath -Arguments @("-3.12")
+    if ($resolvedFromLauncher) {
+      return $resolvedFromLauncher
+    }
   }
 
   foreach ($commandName in @("python", "python3", "python3.12")) {
