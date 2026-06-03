@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -52,6 +53,92 @@ class FakeFailingClient:
 
 
 class GPTExtractorTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._env_patcher = mock.patch.dict(
+            os.environ,
+            {"SCREENING_GPT_EXTRACTOR_LOG_PATH": str(Path(self._tmpdir.name) / "gpt_extractor.log")},
+            clear=False,
+        )
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+
+    def test_extract_candidate_emits_model_request_and_response_events(self):
+        payload = json.dumps(
+            {
+                "name": "Alice",
+                "education_level": "本科",
+                "skills": ["Linux", "adb"],
+                "industry_tags": ["在线教育"],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "QA engineer",
+                "evidence_map": {"education_level": "本科"},
+            }
+        )
+        events: list[tuple[str, dict]] = []
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "openai_compatible",
+                "SCREENING_LOG_MODEL_PAYLOADS": "true",
+            },
+            clear=False,
+        ):
+            extractor = GPTFieldExtractor(client=FakeClient(payload))
+            extractor.set_event_logger(lambda event_type, event_payload: events.append((event_type, event_payload)))
+            result = extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb", "ZmFrZQ==")
+
+        self.assertEqual(result["name"], "Alice")
+        event_types = [event_type for event_type, _ in events]
+        self.assertIn("model.extract.request", event_types)
+        self.assertIn("model.extract.response", event_types)
+        self.assertIn("model.extract.completed", event_types)
+        request_payload = next(payload for event_type, payload in events if event_type == "model.extract.request")
+        response_payload = next(payload for event_type, payload in events if event_type == "model.extract.response")
+        self.assertIn("\"messages\"", request_payload["request_body"])
+        self.assertIn("Linux adb", request_payload["request_body"])
+        self.assertIn("\"name\": \"Alice\"", response_payload["response_text"])
+
+    def test_extract_candidate_appends_jsonl_file_log(self):
+        payload = json.dumps(
+            {
+                "name": "Alice",
+                "education_level": "本科",
+                "skills": ["Linux", "adb"],
+                "industry_tags": ["在线教育"],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "QA engineer",
+                "evidence_map": {"education_level": "本科"},
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "gpt_extractor.log"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCREENING_EXTRACTION_PROVIDER": "openai_compatible",
+                    "SCREENING_LOG_MODEL_PAYLOADS": "true",
+                    "SCREENING_GPT_EXTRACTOR_LOG_PATH": str(log_path),
+                },
+                clear=False,
+            ):
+                extractor = GPTFieldExtractor(client=FakeClient(payload))
+                result = extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb", "ZmFrZQ==")
+
+            records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(result["name"], "Alice")
+        event_types = [record["event_type"] for record in records]
+        self.assertIn("model.extract.request", event_types)
+        self.assertIn("model.extract.response", event_types)
+        request_record = next(record for record in records if record["event_type"] == "model.extract.request")
+        response_record = next(record for record in records if record["event_type"] == "model.extract.response")
+        self.assertIn("\"messages\"", request_record["payload"]["request_body"])
+        self.assertIn("\"name\": \"Alice\"", response_record["payload"]["response_text"])
+
     def test_extract_candidate_validates_and_parses(self):
         payload = json.dumps(
             {
@@ -175,6 +262,45 @@ class GPTExtractorTests(unittest.TestCase):
         self.assertIn("--print", calls[0]["command"])
         self.assertEqual(calls[0]["input"], None)
         self.assertEqual(extractor.last_usage["provider"], "kimi_cli")
+
+    def test_extract_candidate_logs_redacted_kimi_cli_command(self):
+        payload = json.dumps(
+            {
+                "name": "Alice",
+                "education_level": "本科",
+                "skills": ["Linux"],
+                "industry_tags": [],
+                "project_keywords": [],
+                "certificates": [],
+                "resume_summary": "QA engineer",
+                "evidence_map": {},
+            }
+        )
+        events: list[tuple[str, dict]] = []
+
+        def fake_cli_runner(command, **kwargs):
+            return type("Completed", (), {"returncode": 0, "stdout": payload, "stderr": ""})()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCREENING_EXTRACTION_PROVIDER": "kimi_cli",
+                "SCREENING_ENABLE_MODEL_EXTRACTION": "true",
+                "SCREENING_KIMI_CLI_COMMAND": "kimi",
+                "SCREENING_KIMI_CLI_CONFIG": '{"provider":{"api_key":"sk-test-secret","base_url":"https://api.kimi.com/coding/v1"}}',
+                "SCREENING_LOG_MODEL_PAYLOADS": "true",
+            },
+            clear=False,
+        ):
+            extractor = GPTFieldExtractor(cli_runner=fake_cli_runner)
+            extractor.set_event_logger(lambda event_type, event_payload: events.append((event_type, event_payload)))
+            extractor.extract_candidate("qa_test_engineer_v1", "本科 Linux adb")
+
+        request_payload = next(payload for event_type, payload in events if event_type == "model.extract.request")
+        self.assertIn("--config", request_payload["command"])
+        self.assertIn("<redacted>", request_payload["command"])
+        self.assertNotIn("sk-test-secret", json.dumps(request_payload, ensure_ascii=False))
+        self.assertIn("request_prompt", request_payload)
 
     def test_extract_candidate_with_kimi_cli_default_toml_config_uses_alias_and_utf8(self):
         payload = json.dumps(

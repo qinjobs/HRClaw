@@ -818,6 +818,10 @@ def _task_runner_page_html(username: str) -> str:
             </select>
           </div>
           <div class="field">
+            <label>关键词</label>
+            <input id="keyword" placeholder="例如：字节；AI；产品经理" />
+          </div>
+          <div class="field">
             <label>自动打招呼阈值</label>
             <input id="autoGreetThreshold" type="number" min="0" max="100" step="0.01" placeholder="留空则使用评分卡 recommend 阈值" />
           </div>
@@ -859,6 +863,7 @@ def _task_runner_page_html(username: str) -> str:
     const maxCandidates = document.getElementById("maxCandidates");
     const maxPages = document.getElementById("maxPages");
     const sortBy = document.getElementById("sortBy");
+    const keyword = document.getElementById("keyword");
     const autoGreetThreshold = document.getElementById("autoGreetThreshold");
     const logBox = document.getElementById("logBox");
     const runBtn = document.getElementById("runBtn");
@@ -891,6 +896,9 @@ def _task_runner_page_html(username: str) -> str:
       log("开始创建并执行任务（流程：9222检测 -> 复用已登录的可附着Chrome -> recommend抓取与评分 -> 达到评分卡阈值后自动打招呼）...");
       try {{
         const searchConfig = {{}};
+        if (keyword.value.trim()) {{
+          searchConfig.keyword = keyword.value.trim();
+        }}
         const thresholdValue = Number(autoGreetThreshold.value);
         if (autoGreetThreshold.value !== "" && Number.isFinite(thresholdValue)) {{
           searchConfig.auto_greet_threshold = thresholdValue;

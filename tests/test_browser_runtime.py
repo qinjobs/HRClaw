@@ -11,7 +11,8 @@ from src.screening.browser_runtime import BrowserRuntimeError, PlaywrightBrowser
 class BrowserRuntimeConfigTests(unittest.TestCase):
     def test_storage_state_defaults_to_auth_directory(self):
         runtime = PlaywrightBrowserRuntime()
-        self.assertTrue(str(runtime.storage_state_path).endswith("data/auth/boss_storage_state.json"))
+        normalized = str(runtime.storage_state_path).replace("\\", "/")
+        self.assertTrue(normalized.endswith("data/auth/boss_storage_state.json"))
 
     def test_runtime_can_skip_loading_saved_storage_state(self):
         runtime = PlaywrightBrowserRuntime(load_storage_state=False)
@@ -57,6 +58,26 @@ class BrowserRuntimeConfigTests(unittest.TestCase):
         attached_context.close.assert_not_called()
         attached_browser.close.assert_not_called()
         playwright.stop.assert_called_once()
+
+    def test_runtime_attach_ignores_local_admin_page_when_boss_page_exists(self):
+        runtime = PlaywrightBrowserRuntime(cdp_url="http://127.0.0.1:9222")
+        local_page = mock.Mock()
+        local_page.url = "http://127.0.0.1:8080/hr/tasks"
+        boss_page = mock.Mock()
+        boss_page.url = "https://www.zhipin.com/web/chat/index"
+
+        selected = runtime._select_attached_page([local_page, boss_page])
+
+        self.assertIs(selected, boss_page)
+
+    def test_runtime_attach_returns_none_when_only_local_pages_exist(self):
+        runtime = PlaywrightBrowserRuntime(cdp_url="http://127.0.0.1:9222")
+        local_page = mock.Mock()
+        local_page.url = "http://127.0.0.1:8080/hr/tasks"
+
+        selected = runtime._select_attached_page([local_page])
+
+        self.assertIsNone(selected)
 
     def test_runtime_normalizes_localhost_cdp_url_to_loopback(self):
         self.assertEqual(
@@ -227,6 +248,90 @@ class BrowserRuntimeConfigTests(unittest.TestCase):
         open_menu.assert_called_once_with(selectors)
         goto_mock.assert_called_once_with(selectors.recommend_url)
         self.assertEqual(result, selectors.recommend_url)
+
+    def test_goto_recommend_page_does_not_reload_when_already_on_recommend_url(self):
+        runtime = PlaywrightBrowserRuntime()
+        selectors = BossSelectors(
+            search_url="https://www.zhipin.com/web/chat/search",
+            search_keyword_input=("input",),
+            search_city_input=("input",),
+            search_submit=("button",),
+            sort_active=("button.active",),
+            sort_recent=("button.recent",),
+            list_ready=("body",),
+            candidate_card=("article",),
+            candidate_name=("h2",),
+            candidate_title=("h3",),
+            candidate_company=("h4",),
+            candidate_experience=("h5",),
+            candidate_education=("h6",),
+            candidate_location=("h7",),
+            candidate_active_time=("h8",),
+            candidate_link=("a",),
+            candidate_external_id=("[data-id]",),
+            detail_ready=("main",),
+            detail_main_text=("main",),
+            next_page=("button.next",),
+        )
+        page = mock.Mock()
+        page.url = "https://www.zhipin.com/web/chat/recommend"
+        runtime._page = page
+
+        with mock.patch.object(runtime, "_reuse_existing_recommend_page", return_value=False), mock.patch.object(
+            runtime,
+            "wait_for_recommend_list_ready",
+            return_value=None,
+        ) as wait_ready, mock.patch.object(
+            runtime,
+            "_open_recommend_from_chat_menu",
+            return_value=False,
+        ) as open_menu, mock.patch.object(
+            runtime,
+            "goto",
+            return_value=selectors.recommend_url,
+        ) as goto_mock:
+            result = runtime.goto_recommend_page(selectors)
+
+        wait_ready.assert_called_once_with(selectors, timeout_ms=8000)
+        open_menu.assert_not_called()
+        goto_mock.assert_not_called()
+        page.goto.assert_not_called()
+        self.assertEqual(result, "https://www.zhipin.com/web/chat/recommend")
+
+    def test_open_recommend_from_chat_menu_clicks_nav_only_once(self):
+        runtime = PlaywrightBrowserRuntime()
+        selectors = BossSelectors(
+            search_url="https://www.zhipin.com/web/chat/search",
+            search_keyword_input=("input",),
+            search_city_input=("input",),
+            search_submit=("button",),
+            sort_active=("button.active",),
+            sort_recent=("button.recent",),
+            list_ready=("body",),
+            candidate_card=("article",),
+            candidate_name=("h2",),
+            candidate_title=("h3",),
+            candidate_company=("h4",),
+            candidate_experience=("h5",),
+            candidate_education=("h6",),
+            candidate_location=("h7",),
+            candidate_active_time=("h8",),
+            candidate_link=("a",),
+            candidate_external_id=("[data-id]",),
+            detail_ready=("main",),
+            detail_main_text=("main",),
+            next_page=("button.next",),
+        )
+        page = mock.Mock()
+        page.url = "https://www.zhipin.com/web/chat/index"
+        runtime._page = page
+        nav_locator = mock.Mock()
+
+        with mock.patch.object(runtime, "_locator_for_any_global", side_effect=[nav_locator, None]):
+            result = runtime._open_recommend_from_chat_menu(selectors)
+
+        self.assertFalse(result)
+        nav_locator.first.click.assert_called_once_with()
 
     def test_goto_recommend_page_reuses_existing_recommend_tab_before_navigating(self):
         runtime = PlaywrightBrowserRuntime()

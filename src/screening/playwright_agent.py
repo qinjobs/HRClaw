@@ -43,6 +43,38 @@ def _extract_external_id(detail_url: str | None, fallback_index: int, fallback_t
 
 
 class PlaywrightLocalAgent:
+    _KNOWN_LOCATION_TOKENS = (
+        "北京",
+        "上海",
+        "深圳",
+        "广州",
+        "杭州",
+        "成都",
+        "西安",
+        "武汉",
+        "苏州",
+        "南京",
+        "长沙",
+        "郑州",
+        "天津",
+    )
+    _KNOWN_LOCATION_ENGLISH = {
+        "beijing": "Beijing",
+        "shanghai": "Shanghai",
+        "shenzhen": "Shenzhen",
+        "guangzhou": "Guangzhou",
+        "hangzhou": "Hangzhou",
+        "chengdu": "Chengdu",
+        "xian": "Xi'an",
+        "xi'an": "Xi'an",
+        "wuhan": "Wuhan",
+        "suzhou": "Suzhou",
+        "nanjing": "Nanjing",
+        "changsha": "Changsha",
+        "zhengzhou": "Zhengzhou",
+        "tianjin": "Tianjin",
+    }
+
     def __init__(
         self,
         *,
@@ -74,6 +106,9 @@ class PlaywrightLocalAgent:
 
     def set_trace_logger(self, logger) -> None:
         self._trace_logger = logger
+        set_event_logger = getattr(self.extractor, "set_event_logger", None)
+        if callable(set_event_logger):
+            set_event_logger(logger)
 
     @staticmethod
     def _preferred_candidate_name(extracted_name: Any, fallback_name: Any) -> str | None:
@@ -95,6 +130,15 @@ class PlaywrightLocalAgent:
             return None
         return text
 
+    @classmethod
+    def _readable_text(cls, value: Any) -> str | None:
+        text = cls._normalized_text(value)
+        if not text:
+            return None
+        if looks_like_mojibake(text):
+            return None
+        return text
+
     @staticmethod
     def _preferred_text_field(extracted_value: Any, fallback_value: Any, *, normalize_education: bool = False) -> str | None:
         raw_extracted = str(extracted_value or "").strip()
@@ -102,8 +146,8 @@ class PlaywrightLocalAgent:
             extracted = normalize_education_level(extracted_value)
             fallback = normalize_education_level(fallback_value)
         else:
-            extracted = PlaywrightLocalAgent._normalized_text(extracted_value)
-            fallback = PlaywrightLocalAgent._normalized_text(fallback_value)
+            extracted = PlaywrightLocalAgent._readable_text(extracted_value)
+            fallback = PlaywrightLocalAgent._readable_text(fallback_value)
         if fallback and "\ufffd" in raw_extracted:
             return fallback
         if fallback and raw_extracted and looks_like_mojibake(extracted_value):
@@ -111,6 +155,41 @@ class PlaywrightLocalAgent:
                 return extracted
             return fallback
         return extracted or fallback
+
+    @classmethod
+    def _clean_text_container(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            cleaned: dict[str, Any] = {}
+            for raw_key, raw_value in value.items():
+                key = cls._readable_text(raw_key)
+                if not key:
+                    continue
+                item = cls._clean_text_container(raw_value)
+                if item in (None, "", [], {}):
+                    continue
+                cleaned[key] = item
+            return cleaned
+        if isinstance(value, (list, tuple, set)):
+            items: list[Any] = []
+            seen: set[str] = set()
+            for raw_item in value:
+                item = cls._clean_text_container(raw_item)
+                if item in (None, "", [], {}):
+                    continue
+                marker = str(item).lower()
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                items.append(item)
+            return items
+        if isinstance(value, str):
+            return cls._readable_text(value)
+        return value
+
+    @classmethod
+    def _clean_structured_item(cls, item: dict[str, Any]) -> dict[str, Any]:
+        cleaned = cls._clean_text_container(item)
+        return cleaned if isinstance(cleaned, dict) else {}
 
     @staticmethod
     def _preferred_resume_summary(*values: Any) -> str | None:
@@ -136,6 +215,168 @@ class PlaywrightLocalAgent:
                 best_score = score
                 best_text = text
         return best_text
+
+    @classmethod
+    def _infer_name_from_text(cls, *values: Any) -> str | None:
+        for value in values:
+            text = cls._normalized_text(value)
+            if not text:
+                continue
+            for raw_line in str(text).splitlines()[:8]:
+                line = re.sub(r"\s+", " ", raw_line).strip()
+                if not line:
+                    continue
+                if re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", line):
+                    return line
+        return None
+
+    @classmethod
+    def _infer_location_from_text(cls, *values: Any) -> str | None:
+        combined_parts: list[str] = []
+        for value in values:
+            text = cls._normalized_text(value)
+            if text:
+                combined_parts.append(text)
+        if not combined_parts:
+            return None
+        combined = "\n".join(combined_parts)
+        token_hits = [
+            (combined.index(token), token)
+            for token in cls._KNOWN_LOCATION_TOKENS
+            if token in combined
+        ]
+        if token_hits:
+            return min(token_hits, key=lambda item: item[0])[1]
+        lowered = combined.lower()
+        english_hits: list[tuple[int, str]] = []
+        for token, label in cls._KNOWN_LOCATION_ENGLISH.items():
+            match = re.search(rf"\b{re.escape(token)}\b", lowered)
+            if match:
+                english_hits.append((match.start(), label))
+        if english_hits:
+            return min(english_hits, key=lambda item: item[0])[1]
+        return None
+
+    @classmethod
+    def _infer_title_from_text(cls, *values: Any) -> str | None:
+        title_pattern = re.compile(
+            r"((?:AI|AIGC|B端|C端|策略|搜索|数据|平台|高级|资深|助理|初级|中级|Java|Python|前端|后端|测试|软件)?"
+            r"(?:产品经理|测试工程师|开发工程师|工程师|设计师|运营|经理|专员|主管|总监))",
+            flags=re.IGNORECASE,
+        )
+        candidates: list[tuple[float, int, str]] = []
+        order = 0
+        for value in values:
+            text = cls._readable_text(value)
+            if not text:
+                continue
+            for raw_line in text.splitlines():
+                order += 1
+                line = re.sub(r"\s+", " ", raw_line).strip()
+                if not line:
+                    continue
+                match = title_pattern.search(line)
+                if match:
+                    title = match.group(1).strip()
+                    score = float(len(title))
+                    if re.match(r"^(?:AI|AIGC|B端|C端|策略|搜索|数据|平台)", title, flags=re.IGNORECASE):
+                        score += 20.0
+                    if re.search(r"\d{4}|至今|公司|科技|数字|教育|网络", line):
+                        score += 8.0
+                    candidates.append((score, -order, title))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+    @classmethod
+    def _infer_company_from_text(cls, title: Any, *values: Any) -> str | None:
+        title_text = cls._readable_text(title)
+        company_suffix = re.compile(r"(公司|集团|科技|网络|数字|教育|信息|智能|有限|中心|工作室)$")
+        for value in values:
+            text = cls._readable_text(value)
+            if not text:
+                continue
+            for raw_line in text.splitlines():
+                line = re.sub(r"\s+", " ", raw_line).strip()
+                if not line:
+                    continue
+                if title_text and title_text in line:
+                    before = line.split(title_text, 1)[0]
+                else:
+                    match = re.search(r"(.{2,40}?)(?:AI|AIGC|B端|C端|策略|搜索|数据|平台)?产品经理", line)
+                    before = match.group(1) if match else ""
+                before = re.sub(r"^\d{4}(?:[./-]\d{1,2})?\s*(?:至今|[-~至到]\s*\d{4}(?:[./-]\d{1,2})?)?\s*", "", before)
+                before = before.strip(" \t丨|·:-—")
+                if not before or looks_like_mojibake(before):
+                    continue
+                if len(before) < 2 or len(before) > 30:
+                    continue
+                if re.search(r"[\u4e00-\u9fff]", before) and (company_suffix.search(before) or len(before) >= 4):
+                    return before
+        return None
+
+    @staticmethod
+    def _keyword_terms(search_config: dict[str, Any] | None) -> list[str]:
+        raw = str((search_config or {}).get("keyword") or "").strip()
+        if not raw:
+            return []
+        terms: list[str] = []
+        seen: set[str] = set()
+        for part in re.split(r"[;；]+", raw):
+            token = re.sub(r"\s+", " ", str(part or "").strip())
+            if not token:
+                continue
+            normalized = token.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(token)
+        return terms
+
+    @staticmethod
+    def _keyword_match_text(*values: Any) -> str:
+        parts: list[str] = []
+        for value in values:
+            text = PlaywrightLocalAgent._normalized_text(value)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _matches_keyword_terms(text: Any, keyword_terms: list[str]) -> bool:
+        if not keyword_terms:
+            return True
+        normalized_text = PlaywrightLocalAgent._normalized_text(text)
+        if not normalized_text:
+            return False
+        folded_text = normalized_text.casefold()
+        dense_text = re.sub(r"\s+", "", folded_text)
+        for keyword in keyword_terms:
+            normalized_keyword = PlaywrightLocalAgent._normalized_text(keyword)
+            if not normalized_keyword:
+                continue
+            folded_keyword = normalized_keyword.casefold()
+            dense_keyword = re.sub(r"\s+", "", folded_keyword)
+            if folded_keyword not in folded_text and dense_keyword not in dense_text:
+                return False
+        return True
+
+    @staticmethod
+    def _configured_external_ids(search_config: dict[str, Any] | None, *field_names: str) -> set[str]:
+        values: set[str] = set()
+        config = search_config or {}
+        for field_name in field_names:
+            raw = config.get(field_name)
+            if isinstance(raw, (list, tuple, set)):
+                raw_items = raw
+            else:
+                text = str(raw or "").replace("\uFF1B", ";").replace("\r", "\n")
+                raw_items = re.split(r"[,;\n]+", text) if text.strip() else []
+            for raw_item in raw_items:
+                external_id = str(raw_item or "").strip()
+                if external_id:
+                    values.add(external_id)
+        return values
 
     @staticmethod
     def _recommend_card_has_identity(card: dict[str, Any]) -> bool:
@@ -192,13 +433,17 @@ class PlaywrightLocalAgent:
         *,
         seen_card_keys: set[str],
         recent_seen_external_ids: set[str],
+        excluded_external_ids: set[str] | None = None,
     ) -> dict[str, Any] | None:
+        excluded_ids = excluded_external_ids or set()
         for current_card in page_cards:
             visit_key = self._recommend_card_visit_key(current_card)
             if visit_key in seen_card_keys:
                 continue
             external_id = str(current_card.get("external_id") or "").strip()
             if external_id and external_id in recent_seen_external_ids:
+                continue
+            if external_id and external_id in excluded_ids:
                 continue
             return dict(current_card)
         return None
@@ -218,21 +463,38 @@ class PlaywrightLocalAgent:
 
         normalized_mode = (search_mode or "").strip().lower()
         effective_search_config = dict(search_config or {})
+        self._trace(
+            "candidate_collection.started",
+            job_id=job_id,
+            search_mode=normalized_mode or "search",
+            sort_by=sort_by,
+            max_candidates=max_candidates,
+            max_pages=max_pages,
+            search_config=effective_search_config,
+        )
         if normalized_mode in {"recommend", "recommend_flow", "recommendation"}:
             effective_search_config.setdefault("skip_existing_candidates", True)
-            return self._collect_recommend_candidates(
+            candidates = self._collect_recommend_candidates(
                 job_id,
                 max_candidates=max_candidates,
                 max_pages=max_pages,
                 search_config=effective_search_config,
             )
-        return self._collect_search_candidates(
-            job_id,
-            max_candidates=max_candidates,
-            search_config=effective_search_config,
-            sort_by=sort_by,
-            max_pages=max_pages,
+        else:
+            candidates = self._collect_search_candidates(
+                job_id,
+                max_candidates=max_candidates,
+                search_config=effective_search_config,
+                sort_by=sort_by,
+                max_pages=max_pages,
+            )
+        self._trace(
+            "candidate_collection.completed",
+            job_id=job_id,
+            search_mode=normalized_mode or "search",
+            candidate_count=len(candidates),
         )
+        return candidates
 
     def _collect_search_candidates(
         self,
@@ -244,6 +506,7 @@ class PlaywrightLocalAgent:
         max_pages: int,
     ) -> list[CandidateExtract]:
         self.runtime.goto_search_page(self.selectors)
+        self._trace("search.page_ready", current_url=self.runtime.current_url)
         self._handle_login_scan_wait(search_config, flow="search")
         self._handle_manual_verification(search_config, flow="search")
         if not self.runtime.wait_for_any(self.selectors.list_ready, timeout_ms=15000):
@@ -252,35 +515,77 @@ class PlaywrightLocalAgent:
             raise RuntimeError(
                 "Candidate list did not become ready. Check login state or update BOSS selectors."
             )
+        self._trace("search.list_ready", current_url=self.runtime.current_url)
 
         applied_filters = self.runtime.apply_search_filters(self.selectors, search_config, sort_by)
+        self._trace(
+            "search.filters_applied",
+            sort_by=sort_by,
+            search_config=search_config,
+            applied_filters=applied_filters,
+        )
         queued_cards: list[dict[str, Any]] = []
         seen_external_ids: set[str] = set()
+        excluded_external_ids = self._configured_external_ids(search_config, "exclude_external_ids", "exclude_external_id")
         page_index = 1
         while page_index <= max(1, max_pages) and len(queued_cards) < max_candidates:
             cards = self.runtime.collect_candidate_cards(self.selectors, max_candidates * 2)
             recent_seen = self._recent_seen_external_ids(cards, search_config)
+            skipped_excluded = 0
+            skipped_existing = 0
             for card in cards:
                 external_id = card.get("external_id")
+                if external_id in excluded_external_ids:
+                    skipped_excluded += 1
+                    continue
                 if external_id in seen_external_ids or external_id in recent_seen:
+                    skipped_existing += 1
                     continue
                 seen_external_ids.add(external_id)
                 card["page_index"] = page_index
                 queued_cards.append(card)
                 if len(queued_cards) >= max_candidates:
                     break
+            self._trace(
+                "search.page_cards",
+                page_index=page_index,
+                card_count=len(cards),
+                queued_count=len(queued_cards),
+                skipped_existing=skipped_existing,
+                skipped_excluded=skipped_excluded,
+            )
             if len(queued_cards) >= max_candidates:
                 break
             self._pause_for_human_browse(search_config, stage="page_turn")
-            if not self.runtime.go_to_next_page(self.selectors):
+            has_next_page = bool(self.runtime.go_to_next_page(self.selectors))
+            self._trace(
+                "search.page_turn",
+                page_index=page_index,
+                has_next_page=has_next_page,
+                current_url=self.runtime.current_url,
+            )
+            if not has_next_page:
                 break
             page_index += 1
 
         candidates = []
         for index, card in enumerate(queued_cards[:max_candidates], start=1):
             self._pause_for_human_browse(search_config, stage="open_candidate")
+            self._trace(
+                "search.candidate_opening",
+                page_index=card.get("page_index"),
+                external_id=card.get("external_id"),
+                name=card.get("name"),
+            )
             self.runtime.open_candidate_card(card, self.selectors)
             detail = self.runtime.extract_detail_payload(self.selectors)
+            self._trace(
+                "search.candidate_detail",
+                page_index=card.get("page_index"),
+                external_id=card.get("external_id"),
+                detail_url=detail.get("detail_url"),
+                detail_text_chars=len(str(detail.get("page_text") or "")),
+            )
             screenshot_base64, screenshot_base64_error = self._safe_screenshot_base64()
             merged_text = "\n".join(
                 part for part in (card.get("summary_text"), detail.get("page_text")) if part
@@ -296,8 +601,11 @@ class PlaywrightLocalAgent:
                 extraction_error = str(exc)
                 extraction_usage = getattr(self.extractor, "last_usage", None)
             item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
+            item = self._clean_structured_item(item)
             resolved_item = dict(item)
             resolved_item["name"] = self._preferred_candidate_name(item.get("name"), card.get("name"))
+            if not resolved_item.get("name") or looks_like_mojibake(resolved_item.get("name")):
+                resolved_item["name"] = self._infer_name_from_text(detail.get("page_text"), card.get("summary_text"), merged_text)
             resolved_item["education_level"] = self._preferred_text_field(
                 item.get("education_level"),
                 card.get("education_level") or extract_education_level(merged_text),
@@ -305,7 +613,22 @@ class PlaywrightLocalAgent:
             )
             resolved_item["current_company"] = self._preferred_text_field(item.get("current_company"), card.get("current_company"))
             resolved_item["current_title"] = self._preferred_text_field(item.get("current_title"), card.get("current_title"))
+            if not resolved_item.get("current_title") or looks_like_mojibake(resolved_item.get("current_title")):
+                resolved_item["current_title"] = self._infer_title_from_text(
+                    card.get("summary_text"),
+                    merged_text,
+                    detail.get("page_text"),
+                )
+            if not resolved_item.get("current_company") or looks_like_mojibake(resolved_item.get("current_company")):
+                resolved_item["current_company"] = self._infer_company_from_text(
+                    resolved_item.get("current_title"),
+                    card.get("summary_text"),
+                    merged_text,
+                    detail.get("page_text"),
+                )
             resolved_item["location"] = self._preferred_text_field(item.get("location"), card.get("location"))
+            if not resolved_item.get("location") or looks_like_mojibake(resolved_item.get("location")):
+                resolved_item["location"] = self._infer_location_from_text(card.get("summary_text"), merged_text, detail.get("page_text"))
             resolved_item["last_active_time"] = self._preferred_text_field(item.get("last_active_time"), card.get("last_active_time"))
             resolved_item["major"] = self._normalized_text(item.get("major"))
             resolved_item["resume_summary"] = self._preferred_resume_summary(
@@ -323,6 +646,15 @@ class PlaywrightLocalAgent:
                 content_html=detail.get("content_html"),
                 page_html=detail.get("page_html"),
             )
+            self._trace(
+                "search.candidate_artifacts",
+                page_index=card.get("page_index"),
+                external_id=card.get("external_id"),
+                resume_markdown_path=resume_artifacts.get("resume_markdown_path"),
+                resume_full_screenshot_path=resume_artifacts.get("resume_full_screenshot_path"),
+                screenshot_error=resume_artifacts.get("screenshot_error"),
+                screenshot_base64_error=screenshot_base64_error,
+            )
             normalized_fields = self._build_score_fields(
                 item.get("normalized_fields") or build_fallback_normalized_fields(job_id, item),
                 item=resolved_item,
@@ -332,44 +664,53 @@ class PlaywrightLocalAgent:
                 years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
                 education_level=resolved_item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
             )
-            candidates.append(
-                CandidateExtract(
-                    external_id=card.get("external_id")
-                    or _extract_external_id(detail.get("detail_url"), index, merged_text),
-                    name=resolved_item.get("name"),
-                    age=item.get("age") or extract_age(merged_text),
-                    education_level=resolved_item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
-                    major=resolved_item.get("major"),
-                    years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
-                    current_company=resolved_item.get("current_company") or card.get("current_company"),
-                    current_title=resolved_item.get("current_title") or card.get("current_title"),
-                    expected_salary=item.get("expected_salary") or extract_salary(merged_text),
-                    location=resolved_item.get("location") or card.get("location"),
-                    last_active_time=resolved_item.get("last_active_time") or card.get("last_active_time"),
-                    raw_summary=resolved_item.get("resume_summary") or detail.get("page_text") or card.get("summary_text"),
-                    normalized_fields=normalized_fields,
-                    evidence_map={
-                        "list_summary": card.get("summary_text"),
-                        "list_url": card.get("detail_url"),
-                        "detail_url": detail.get("detail_url"),
-                        "detail_excerpt": (detail.get("page_text") or "")[:500],
-                        "selector_mode": "playwright_local",
-                        "gpt_extraction_enabled": getattr(self.extractor, "enabled", False),
-                        "gpt_extraction_used": bool(extracted),
-                        "model_name": getattr(self.extractor, "model", None),
-                        "model_usage": extraction_usage,
-                        **({"gpt_extraction_error": extraction_error} if extraction_error else {}),
-                        **({"screenshot_error": resume_artifacts.get("screenshot_error")} if resume_artifacts.get("screenshot_error") else {}),
-                        **({"screenshot_base64_error": screenshot_base64_error} if screenshot_base64_error else {}),
-                        **resume_artifacts,
-                        "page_index": card.get("page_index"),
-                        "applied_filters": applied_filters,
-                        **item.get("evidence_map", {}),
-                    },
-                    screenshot_path=str(resume_artifacts.get("resume_full_screenshot_path") or resume_artifacts.get("screenshot_path") or ""),
-                )
+            current_candidate = CandidateExtract(
+                external_id=card.get("external_id")
+                or _extract_external_id(detail.get("detail_url"), index, merged_text),
+                name=resolved_item.get("name"),
+                age=item.get("age") or extract_age(merged_text),
+                education_level=resolved_item.get("education_level") or card.get("education_level") or extract_education_level(merged_text),
+                major=resolved_item.get("major"),
+                years_experience=item.get("years_experience") or card.get("years_experience") or extract_years_experience(merged_text),
+                current_company=resolved_item.get("current_company") or card.get("current_company"),
+                current_title=resolved_item.get("current_title") or card.get("current_title"),
+                expected_salary=item.get("expected_salary") or extract_salary(merged_text),
+                location=resolved_item.get("location") or card.get("location"),
+                last_active_time=resolved_item.get("last_active_time") or card.get("last_active_time"),
+                raw_summary=resolved_item.get("resume_summary") or detail.get("page_text") or card.get("summary_text"),
+                normalized_fields=normalized_fields,
+                evidence_map={
+                    "list_summary": card.get("summary_text"),
+                    "list_url": card.get("detail_url"),
+                    "detail_url": detail.get("detail_url"),
+                    "detail_excerpt": (detail.get("page_text") or "")[:500],
+                    "selector_mode": "playwright_local",
+                    "gpt_extraction_enabled": getattr(self.extractor, "enabled", False),
+                    "gpt_extraction_used": bool(extracted),
+                    "model_name": getattr(self.extractor, "model", None),
+                    "model_usage": extraction_usage,
+                    **({"gpt_extraction_error": extraction_error} if extraction_error else {}),
+                    **({"screenshot_error": resume_artifacts.get("screenshot_error")} if resume_artifacts.get("screenshot_error") else {}),
+                    **({"screenshot_base64_error": screenshot_base64_error} if screenshot_base64_error else {}),
+                    **resume_artifacts,
+                    "page_index": card.get("page_index"),
+                    "applied_filters": applied_filters,
+                    **item.get("evidence_map", {}),
+                },
+                screenshot_path=str(resume_artifacts.get("resume_full_screenshot_path") or resume_artifacts.get("screenshot_path") or ""),
+            )
+            candidates.append(current_candidate)
+            self._trace(
+                "search.candidate_compiled",
+                page_index=card.get("page_index"),
+                external_id=current_candidate.external_id,
+                name=current_candidate.name,
+                gpt_extraction_used=bool(extracted),
+                gpt_extraction_error=extraction_error,
+                model_usage=extraction_usage,
             )
 
+        self._trace("search.collect_completed", candidate_count=len(candidates))
         return candidates
 
     def _collect_recommend_candidates(
@@ -380,6 +721,13 @@ class PlaywrightLocalAgent:
         max_pages: int,
         search_config: dict[str, Any],
     ) -> list[CandidateExtract]:
+        self._trace(
+            "recommend.collect_started",
+            job_id=job_id,
+            max_candidates=max_candidates,
+            max_pages=max_pages,
+            search_config=search_config,
+        )
         self._ensure_recommend_login_ready()
         self._trace("recommend.attach_ready", current_url=self.runtime.current_url)
         self._handle_login_scan_wait(search_config, flow="recommend")
@@ -413,6 +761,12 @@ class PlaywrightLocalAgent:
         auto_greet_allow_non_recommend = self._is_truthy_env(
             "SCREENING_AUTO_GREET_ALLOW_NON_RECOMMEND",
             default=False,
+        )
+        keyword_terms = self._keyword_terms(search_config)
+        excluded_external_ids = self._configured_external_ids(
+            search_config,
+            "exclude_external_ids",
+            "exclude_external_id",
         )
         candidates: list[CandidateExtract] = []
         seen_card_keys: set[str] = set()
@@ -481,20 +835,29 @@ class PlaywrightLocalAgent:
 
             recent_seen = self._recent_seen_external_ids(page_cards, search_config)
             pending_cards: list[tuple[str, dict[str, Any]]] = []
+            skipped_excluded = 0
+            skipped_existing = 0
             for card in page_cards:
                 key = self._recommend_card_visit_key(card)
                 if key in seen_card_keys:
                     continue
-                if card.get("external_id") in recent_seen:
+                external_id = str(card.get("external_id") or "").strip()
+                if external_id and external_id in recent_seen:
+                    skipped_existing += 1
+                    continue
+                if external_id and external_id in excluded_external_ids:
+                    skipped_excluded += 1
                     continue
                 pending_cards.append((key, card))
             self._trace(
                 "recommend.pending_cards",
                 page_index=page_index,
                 pending_count=len(pending_cards),
-                skipped_existing=len(page_cards) - len(pending_cards),
+                skipped_existing=skipped_existing,
+                skipped_excluded=skipped_excluded,
             )
 
+            page_attempted = 0
             page_processed = 0
             page_needs_recovery = False
             for target_key, target_card in pending_cards:
@@ -511,6 +874,7 @@ class PlaywrightLocalAgent:
                             current_page_cards,
                             seen_card_keys=seen_card_keys,
                             recent_seen_external_ids=recent_seen,
+                            excluded_external_ids=excluded_external_ids,
                         )
                         if replacement_target_card is not None:
                             target_card = replacement_target_card
@@ -532,19 +896,46 @@ class PlaywrightLocalAgent:
                     self._handle_login_scan_wait(search_config, flow="recommend")
                     self._handle_manual_verification(search_config, flow="recommend")
                     self._pause_for_human_browse(search_config, stage="open_candidate")
+                    page_attempted += 1
                     self.runtime.open_recommend_candidate(target_card, self.selectors)
+                    detail = self.runtime.extract_recommend_detail_payload(self.selectors)
+                    self._trace(
+                        "recommend.candidate_detail",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        external_id=target_card.get("external_id"),
+                        detail_url=detail.get("detail_url"),
+                        detail_text_chars=len(str(detail.get("page_text") or "")),
+                    )
+                    merged_text = "\n".join(
+                        part for part in (target_card.get("summary_text"), detail.get("page_text")) if part
+                    )
+                    keyword_match_text = self._keyword_match_text(
+                        target_card.get("name"),
+                        target_card.get("current_title"),
+                        target_card.get("current_company"),
+                        target_card.get("location"),
+                        target_card.get("summary_text"),
+                        detail.get("page_text"),
+                    )
+                    if keyword_terms and not self._matches_keyword_terms(keyword_match_text, keyword_terms):
+                        self._trace(
+                            "recommend.candidate_filtered",
+                            page_index=page_index,
+                            card_index=target_card.get("card_index"),
+                            external_id=target_card.get("external_id"),
+                            keywords=keyword_terms,
+                            reason="keyword_mismatch",
+                        )
+                        continue
                     resume_full_screenshot_path, resume_full_screenshot_error = self._safe_persist_resume_full_screenshot(
                         target_card.get("external_id") or f"candidate-{candidate_index}",
                     )
-                    detail = self.runtime.extract_recommend_detail_payload(self.selectors)
                     download_result = self.runtime.download_resume(
                         self.selectors,
                         external_id=target_card.get("external_id") or f"candidate-{candidate_index}",
                     )
                     screenshot_base64, screenshot_base64_error = self._safe_screenshot_base64()
-                    merged_text = "\n".join(
-                        part for part in (target_card.get("summary_text"), detail.get("page_text")) if part
-                    )
                     if not download_result.get("downloaded"):
                         try:
                             fallback_path = self.runtime.persist_resume_text(
@@ -566,8 +957,15 @@ class PlaywrightLocalAgent:
                         extraction_error = str(exc)
                         extraction_usage = getattr(self.extractor, "last_usage", None)
                     item = self.extractor.merge_with_fallback(job_id, extracted, heuristic_item)
+                    item = self._clean_structured_item(item)
                     resolved_item = dict(item)
                     resolved_item["name"] = self._preferred_candidate_name(item.get("name"), target_card.get("name"))
+                    if not resolved_item.get("name") or looks_like_mojibake(resolved_item.get("name")):
+                        resolved_item["name"] = self._infer_name_from_text(
+                            detail.get("page_text"),
+                            target_card.get("summary_text"),
+                            merged_text,
+                        )
                     resolved_item["education_level"] = self._preferred_text_field(
                         item.get("education_level"),
                         target_card.get("education_level") or extract_education_level(merged_text),
@@ -575,7 +973,26 @@ class PlaywrightLocalAgent:
                     )
                     resolved_item["current_company"] = self._preferred_text_field(item.get("current_company"), target_card.get("current_company"))
                     resolved_item["current_title"] = self._preferred_text_field(item.get("current_title"), target_card.get("current_title"))
+                    if not resolved_item.get("current_title") or looks_like_mojibake(resolved_item.get("current_title")):
+                        resolved_item["current_title"] = self._infer_title_from_text(
+                            target_card.get("summary_text"),
+                            merged_text,
+                            detail.get("page_text"),
+                        )
+                    if not resolved_item.get("current_company") or looks_like_mojibake(resolved_item.get("current_company")):
+                        resolved_item["current_company"] = self._infer_company_from_text(
+                            resolved_item.get("current_title"),
+                            target_card.get("summary_text"),
+                            merged_text,
+                            detail.get("page_text"),
+                        )
                     resolved_item["location"] = self._preferred_text_field(item.get("location"), target_card.get("location"))
+                    if not resolved_item.get("location") or looks_like_mojibake(resolved_item.get("location")):
+                        resolved_item["location"] = self._infer_location_from_text(
+                            target_card.get("summary_text"),
+                            merged_text,
+                            detail.get("page_text"),
+                        )
                     resolved_item["last_active_time"] = self._preferred_text_field(item.get("last_active_time"), target_card.get("last_active_time"))
                     resolved_item["major"] = self._normalized_text(item.get("major"))
                     resolved_item["resume_summary"] = self._preferred_resume_summary(
@@ -593,6 +1010,19 @@ class PlaywrightLocalAgent:
                         content_html=detail.get("content_html"),
                         page_html=detail.get("page_html"),
                         resume_full_screenshot_path=resume_full_screenshot_path,
+                    )
+                    self._trace(
+                        "recommend.candidate_artifacts",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        external_id=target_card.get("external_id"),
+                        resume_markdown_path=resume_artifacts.get("resume_markdown_path"),
+                        resume_full_screenshot_path=resume_artifacts.get("resume_full_screenshot_path"),
+                        resume_downloaded=download_result.get("downloaded", False),
+                        resume_path=download_result.get("resume_path"),
+                        screenshot_base64_error=screenshot_base64_error,
+                        resume_full_screenshot_error=resume_full_screenshot_error,
+                        resume_fallback_export_error=download_result.get("fallback_export_error"),
                     )
                     years_experience = target_card.get("years_experience") or extract_years_experience(merged_text)
                     if item.get("years_experience"):
@@ -677,6 +1107,16 @@ class PlaywrightLocalAgent:
                     )
                     candidates.append(current_candidate)
                     page_processed += 1
+                    self._trace(
+                        "recommend.candidate_compiled",
+                        page_index=page_index,
+                        card_index=target_card.get("card_index"),
+                        external_id=current_candidate.external_id,
+                        name=current_candidate.name,
+                        gpt_extraction_used=bool(extracted),
+                        gpt_extraction_error=extraction_error,
+                        model_usage=extraction_usage,
+                    )
                 except Exception as exc:
                     self._trace(
                         "recommend.candidate_failed",
@@ -733,11 +1173,11 @@ class PlaywrightLocalAgent:
                 )
                 if recovered:
                     continue
-                if page_processed == 0:
+                if page_attempted == 0:
                     self._trace("recommend.page_stalled", page_index=page_index, current_url=self.runtime.current_url)
                 break
             # Prevent infinite page turning when no usable cards are found.
-            if page_processed == 0:
+            if page_attempted == 0:
                 self._trace("recommend.page_stalled", page_index=page_index, current_url=self.runtime.current_url)
                 break
             self._pause_for_human_browse(search_config, stage="page_turn")
@@ -756,6 +1196,7 @@ class PlaywrightLocalAgent:
                 break
             page_index += 1
 
+        self._trace("recommend.collect_completed", candidate_count=len(candidates))
         return candidates
 
     def _recent_seen_external_ids(self, cards: list[dict[str, Any]], search_config: dict[str, Any]) -> set[str]:
@@ -832,7 +1273,7 @@ class PlaywrightLocalAgent:
             else:
                 raw_items = [value]
             for raw_item in raw_items:
-                text = str(raw_item or "").strip()
+                text = PlaywrightLocalAgent._readable_text(raw_item)
                 if not text:
                     continue
                 lowered = text.lower()
@@ -854,7 +1295,9 @@ class PlaywrightLocalAgent:
         education_level: Any,
     ) -> dict[str, Any]:
         raw_summary = item.get("resume_summary") or detail.get("page_text") or merged_text
-        return dict(normalized_fields or {}) | {
+        clean_normalized_fields = self._clean_text_container(normalized_fields or {})
+        base_fields = clean_normalized_fields if isinstance(clean_normalized_fields, dict) else {}
+        return dict(base_fields) | {
             "name": item.get("name") or card.get("name"),
             "age": item.get("age") or card.get("age") or extract_age(merged_text),
             "education_level": education_level,

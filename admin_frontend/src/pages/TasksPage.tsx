@@ -61,7 +61,7 @@ export function TasksPage() {
     const selectedJob = jobs.find((item) => item.id === jobId) || jobs[0];
     const scorecard = selectedJob?.scorecard as Record<string, any> | undefined;
     const filters = scorecard?.filters as Record<string, unknown> | undefined;
-    setKeyword(selectedJob?.name || "");
+    setKeyword("");
     setCity(String(filters?.location || "").trim());
   }, [jobId, jobs]);
 
@@ -181,10 +181,11 @@ export function TasksPage() {
                 <Input
                   className="border-white/14 bg-white/[0.08] text-white placeholder:text-white/35"
                   id="keyword"
-                  placeholder="默认跟随评分卡名称"
+                  placeholder="支持分号分隔，例如：字节；AI；产品经理"
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
                 />
+                <p className="text-xs text-white/46">仅抓取同时命中这些关键词的简历，使用分号分隔多个条件。</p>
               </div>
               <div className="space-y-2">
                 <Label className="text-white/72" htmlFor="city">城市</Label>

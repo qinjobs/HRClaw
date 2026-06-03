@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -295,6 +296,59 @@ class FakeRecommendRuntimeWithRefreshedReplacementCards(FakeRecommendRuntime):
         return [dict(card) for card in self.card_batches[batch_index][:limit]]
 
 
+class FakeRecommendRuntimeWithKeywordPages(FakeRecommendRuntime):
+    def __init__(self):
+        super().__init__()
+        page_one_card = {
+            **self.cards[0],
+            "external_id": "recommend-001",
+            "name": "候选人A",
+            "current_title": "产品经理",
+            "location": "深圳",
+            "summary_text": "候选人A 产品经理 深圳",
+        }
+        page_two_card = {
+            **self.cards[0],
+            "external_id": "recommend-002",
+            "name": "候选人B",
+            "current_title": "AI产品经理",
+            "location": "深圳",
+            "summary_text": "候选人B AI产品经理 深圳",
+        }
+        self.page_index = 0
+        self.card_pages = [
+            [{**page_one_card, "card_index": 0}],
+            [{**page_two_card, "card_index": 0}],
+        ]
+        self.detail_payloads = {
+            "recommend-001": {
+                "detail_url": self.current_url,
+                "page_text": "候选人A 产品经理 深圳 零售方向",
+            },
+            "recommend-002": {
+                "detail_url": self.current_url,
+                "page_text": "候选人B AI产品经理 深圳 字节合作项目",
+            },
+        }
+
+    def collect_recommend_cards(self, selectors, limit):
+        self.collect_recommend_cards_calls += 1
+        return [dict(card) for card in self.card_pages[self.page_index][:limit]]
+
+    def go_to_next_recommend_page(self, selectors):
+        self.next_page_calls += 1
+        if self.page_index >= len(self.card_pages) - 1:
+            return False
+        self.page_index += 1
+        return True
+
+    def extract_detail_payload(self, selectors):
+        external_id = self.opened_ids[-1]
+        payload = dict(self.detail_payloads[external_id])
+        payload["detail_url"] = self.current_url
+        return payload
+
+
 class FakeExtractor:
     enabled = False
 
@@ -324,6 +378,30 @@ class GarbledStructuredFieldExtractor(FakeExtractor):
             "location": "\ufffd\ufffd",
             "current_title": "\ufffd\ufffd",
             "resume_summary": "\ufffd\ufffd",
+        }
+
+
+class DoubleEncodedMojibakeExtractor(FakeExtractor):
+    def extract_candidate(self, job_id, page_text, screenshot_base64):
+        return {
+            "name": "����",
+            "education_level": "˶ʿ",
+            "location": "閿熸枻鎷烽敓鏂ゆ嫹",
+            "current_company": "锟斤拷通锟斤拷锟斤拷锟斤拷锟斤拷",
+            "current_title": "AI閿熸枻鎷峰搧閿熸枻鎷烽敓鏂ゆ嫹",
+            "skills": ["AI Agent", "AI���ֶԻ�", "RAG"],
+            "industry_tags": ["AI", "����VR"],
+            "project_keywords": ["����VR��Ʒ", "B�˲�Ʒ"],
+            "resume_summary": "29�꣬˶ʿѧ����4�깤�����顣",
+            "evidence_map": {
+                "location": "閿熸枻鎷烽敓鏂ゆ嫹",
+                "current_title": "AI閿熸枻鎷峰搧閿熸枻鎷烽敓鏂ゆ嫹",
+            },
+            "normalized_fields": {
+                "b�˾���": True,
+                "data_analysis_capability": True,
+                "skills": ["AI Agent", "AI���ֶԻ�"],
+            },
         }
 
 
@@ -528,6 +606,74 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertEqual(items[0].current_title, "产品经理")
         self.assertNotIn("\ufffd", items[0].raw_summary or "")
 
+    def test_recommend_flow_discards_double_encoded_mojibake_fields(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards[0].update(
+            {
+                "name": "杨丽",
+                "current_title": None,
+                "current_company": None,
+                "education_level": "硕士",
+                "location": None,
+                "summary_text": (
+                    "20-25K\n杨丽\n刚刚活跃\n29岁 4年 硕士 离职-随时到岗\n"
+                    "最近关注\n深圳 产品经理\n产品+AI经验\nB端产品\n搜索产品\n"
+                    "2024.07 至今\n软通动力数字 AI产品经理\n"
+                    "2024.05 2024.07\n超星尔雅智慧教育 产品经理"
+                ),
+            }
+        )
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=DoubleEncodedMojibakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_ENABLED": "false"}):
+            agent.start_session()
+            items = agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                max_pages=1,
+            )
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item.name, "杨丽")
+        self.assertEqual(item.education_level, "硕士")
+        self.assertEqual(item.location, "深圳")
+        self.assertEqual(item.current_title, "AI产品经理")
+        self.assertEqual(item.current_company, "软通动力数字")
+        structured_blob = json.dumps(
+            {
+                "normalized_fields": item.normalized_fields,
+                "evidence_map": item.evidence_map,
+            },
+            ensure_ascii=False,
+        )
+        self.assertNotIn("閿", structured_blob)
+        self.assertNotIn("锟斤拷", structured_blob)
+        self.assertNotIn("\ufffd", structured_blob)
+
+    def test_recommend_flow_filters_candidates_by_semicolon_keywords_across_pages(self):
+        runtime = FakeRecommendRuntimeWithKeywordPages()
+        agent = PlaywrightLocalAgent(runtime=runtime, selectors=self._selectors(), extractor=FakeExtractor())
+        self.addCleanup(agent.stop_session)
+        with mock.patch.dict("os.environ", {"SCREENING_AUTO_GREET_ENABLED": "false"}):
+            agent.start_session()
+            items = agent.collect_candidates(
+                "qa_test_engineer_v1",
+                1,
+                search_mode="recommend",
+                search_config={"keyword": "字节；AI"},
+                max_pages=2,
+            )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].external_id, "recommend-002")
+        self.assertEqual(runtime.opened_ids, ["recommend-001", "recommend-002"])
+        self.assertEqual(runtime.next_page_calls, 1)
+
     def test_recommend_flow_auto_greet_ignores_decision_when_score_above_threshold(self):
         runtime = FakeRecommendRuntime()
         agent = PlaywrightLocalAgent(runtime=runtime, selectors=self._selectors(), extractor=FakeExtractor())
@@ -687,6 +833,35 @@ class RecommendFlowTests(unittest.TestCase):
         self.assertEqual(items, [])
         self.assertEqual(runtime.opened_ids, [])
         self.assertEqual(checker_calls, [(["recommend-001"], None)])
+
+    def test_recommend_flow_skips_configured_external_ids_before_opening_detail(self):
+        runtime = FakeRecommendRuntime()
+        runtime.cards = [
+            dict(runtime.cards[0]),
+            {
+                **runtime.cards[0],
+                "external_id": "recommend-002",
+                "name": "Candidate B",
+                "card_index": 1,
+            },
+        ]
+        agent = PlaywrightLocalAgent(
+            runtime=runtime,
+            selectors=self._selectors(),
+            extractor=FakeExtractor(),
+        )
+        self.addCleanup(agent.stop_session)
+        agent.start_session()
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_mode="recommend",
+            search_config={"exclude_external_ids": ["recommend-001"], "skip_existing_candidates": False},
+            max_pages=1,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].external_id, "recommend-002")
+        self.assertEqual(runtime.opened_ids, ["recommend-002"])
 
     def test_recent_seen_external_ids_ignores_placeholder_playwright_ids(self):
         runtime = FakeRecommendRuntime()

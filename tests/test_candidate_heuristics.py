@@ -8,6 +8,7 @@ from src.screening.candidate_heuristics import (
     extract_months_since_last_job_end,
     extract_years_experience,
     has_qa_testing_evidence,
+    looks_like_mojibake,
     normalize_education_level,
     repair_text_mojibake,
 )
@@ -29,6 +30,11 @@ class CandidateHeuristicsTests(unittest.TestCase):
     def test_normalize_education_level_repairs_mojibake(self):
         self.assertEqual(normalize_education_level("˶ʿ"), "硕士")
         self.assertEqual(repair_text_mojibake("˶ʿ"), "硕士")
+
+    def test_looks_like_mojibake_detects_double_encoded_replacement_text(self):
+        self.assertTrue(looks_like_mojibake("AI閿熸枻鎷峰搧閿熸枻鎷烽敓鏂ゆ嫹"))
+        self.assertTrue(looks_like_mojibake("锟斤拷通锟斤拷锟斤拷"))
+        self.assertTrue(looks_like_mojibake("锟秸刚伙拷跃"))
 
     def test_has_qa_testing_evidence_with_role_history_fallback(self):
         summary = (

@@ -698,9 +698,12 @@ class PlaywrightBrowserRuntime:
 
     def goto_recommend_page(self, selectors: BossSelectors) -> str:
         page = self._require_page()
-        if self._reuse_existing_recommend_page(selectors, min_cards=1, close_previous_owned=True):
+        if self._reuse_existing_recommend_page(selectors, min_cards=0, close_previous_owned=True):
             return self.current_url
         current_url = (self.current_url or "").lower()
+        if self._is_recommend_page_url(current_url):
+            self.wait_for_recommend_list_ready(selectors, timeout_ms=8000)
+            return self.current_url
         chat_home_url = os.getenv("SCREENING_BOSS_CHAT_URL", "https://www.zhipin.com/web/chat/index")
         if "/web/chat/" not in current_url:
             page.goto(chat_home_url, wait_until="domcontentloaded")
@@ -868,13 +871,16 @@ class PlaywrightBrowserRuntime:
         if "/web/chat/recommend" in current_url:
             return True
         nav_selectors = self._recommend_nav_selectors()
+        clicked = False
         for _ in range(6):
-            locator = self._locator_for_any_global(nav_selectors)
-            if locator is not None:
+            locator = self._locator_for_any_global(nav_selectors) if not clicked else None
+            if locator is not None and not clicked:
                 try:
                     locator.first.click()
+                    clicked = True
                     page.wait_for_timeout(800)
                 except Exception:
+                    clicked = False
                     continue
                 if "/web/chat/recommend" in (self.current_url or "").lower():
                     return True
@@ -2637,7 +2643,7 @@ class PlaywrightBrowserRuntime:
     def _select_attached_page(self, pages: Sequence[Any]) -> Any | None:
         if not pages:
             return None
-        preferred_hosts = ("zhipin.com", "localhost", "127.0.0.1")
+        preferred_hosts = ("zhipin.com",)
         preferred_fragments = (
             "/web/chat/",
             "/web/frame/",
@@ -2669,8 +2675,11 @@ class PlaywrightBrowserRuntime:
                 url = (page.url or "").lower()
             except Exception:
                 continue
-            if not self._is_blank_page_url(url):
-                return page
+            if self._is_blank_page_url(url):
+                continue
+            if any(host in url for host in ("localhost", "127.0.0.1")):
+                continue
+            return page
         return None
 
     @staticmethod

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -142,7 +144,16 @@ class GPTFieldExtractor:
         self.kimi_cli_config = os.getenv("SCREENING_KIMI_CLI_CONFIG", "").strip()
         self.kimi_cli_api_key = os.getenv("SCREENING_KIMI_CLI_API_KEY", "").strip()
         self.kimi_cli_base_url = os.getenv("SCREENING_KIMI_CLI_BASE_URL", "https://api.kimi.com/coding/v1").strip()
+        self.log_model_payloads = os.getenv("SCREENING_LOG_MODEL_PAYLOADS", "false").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
+        self.log_model_payload_max_chars = max(0, int(os.getenv("SCREENING_LOG_MODEL_PAYLOAD_MAX_CHARS", "40000")))
+        self.file_log_path = self._resolve_file_log_path(os.getenv("SCREENING_GPT_EXTRACTOR_LOG_PATH", "").strip())
         self.last_usage: dict[str, Any] | None = None
+        self._event_logger = None
         self.client = client
         self._cli_runner = cli_runner or subprocess.run
         if self.provider == "kimi_cli":
@@ -168,26 +179,69 @@ class GPTFieldExtractor:
             return bool(command and (Path(command).exists() or shutil.which(command) is not None))
         return self.client is not None
 
+    def set_event_logger(self, logger) -> None:
+        self._event_logger = logger
+
     def extract_candidate(self, job_id: str, page_text: str, screenshot_base64: str | None = None) -> dict[str, Any]:
         self.last_usage = None
+        self._emit_event(
+            "model.extract.start",
+            job_id=job_id,
+            provider=self.provider,
+            model=self.model,
+            enabled=self.enabled,
+            **self._text_log_payload("page_text", page_text),
+        )
         if not self.enabled:
+            self._emit_event(
+                "model.extract.skipped",
+                job_id=job_id,
+                provider=self.provider,
+                model=self.model,
+                reason="extractor_disabled",
+            )
             return {}
         try:
             if self.provider == "kimi_cli":
-                return self._extract_with_kimi_cli(job_id, page_text)
-            return self._extract_with_chat_completions(job_id, page_text)
-        except RuntimeError:
+                result = self._extract_with_kimi_cli(job_id, page_text)
+            else:
+                result = self._extract_with_chat_completions(job_id, page_text)
+            self._emit_event(
+                "model.extract.completed",
+                job_id=job_id,
+                provider=self.provider,
+                model=self.model,
+                extracted_keys=sorted(result.keys()),
+                usage=self.last_usage or {},
+            )
+            return result
+        except RuntimeError as exc:
+            self._emit_event(
+                "model.extract.failed",
+                job_id=job_id,
+                provider=self.provider,
+                model=self.model,
+                error=str(exc),
+            )
             raise
         except Exception as exc:
-            raise RuntimeError(summarize_model_error(exc)) from exc
+            normalized_error = summarize_model_error(exc)
+            self._emit_event(
+                "model.extract.failed",
+                job_id=job_id,
+                provider=self.provider,
+                model=self.model,
+                error=normalized_error,
+            )
+            raise RuntimeError(normalized_error) from exc
 
     def _extract_with_chat_completions(self, job_id: str, page_text: str) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
+                request_payload = {
+                    "model": self.model,
+                    "messages": [
                         {
                             "role": "system",
                             "content": FIELD_EXTRACTION_PROMPT,
@@ -197,13 +251,46 @@ class GPTFieldExtractor:
                             "content": build_local_extraction_prompt(job_id, page_text),
                         },
                     ],
-                    response_format={"type": "json_object"},
-                    temperature=0.2,
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.2,
+                }
+                self._emit_event(
+                    "model.extract.request",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=self.model,
+                    transport="chat_completions",
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    **self._json_log_payload("request_body", request_payload),
                 )
+                response = self.client.chat.completions.create(**request_payload)
+                response_text = self._chat_response_text(response)
                 self.last_usage = self._chat_usage(response)
-                return self._validate_payload_text(self._chat_response_text(response))
+                self._emit_event(
+                    "model.extract.response",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=self.model,
+                    transport="chat_completions",
+                    attempt=attempt + 1,
+                    usage=self.last_usage or {},
+                    **self._text_log_payload("response_text", response_text),
+                )
+                return self._validate_payload_text(response_text)
             except Exception as exc:
                 last_error = exc
+                self._emit_event(
+                    "model.extract.attempt_failed",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=self.model,
+                    transport="chat_completions",
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    retrying=attempt < self.max_retries,
+                    error=self._normalize_provider_error(exc),
+                )
                 if attempt >= self.max_retries:
                     break
                 time.sleep(self.retry_delay_ms / 1000)
@@ -239,6 +326,18 @@ class GPTFieldExtractor:
                     else:
                         stdin_input += "\n"
 
+                self._emit_event(
+                    "model.extract.request",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=effective_model or self.model,
+                    transport="kimi_cli",
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    request_channel="stdin" if stdin_input is not None else "argv",
+                    command=self._redact_cli_command(command),
+                    **self._text_log_payload("request_prompt", full_prompt),
+                )
                 completed = self._cli_runner(
                     command,
                     input=stdin_input,
@@ -252,6 +351,17 @@ class GPTFieldExtractor:
 
                 stdout = (completed.stdout or "").strip()
                 stderr = (completed.stderr or "").strip()
+                self._emit_event(
+                    "model.extract.response",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=effective_model or self.model,
+                    transport="kimi_cli",
+                    attempt=attempt + 1,
+                    returncode=completed.returncode,
+                    **self._text_log_payload("stdout_text", stdout),
+                    **self._text_log_payload("stderr_text", stderr),
+                )
                 if completed.returncode != 0 and not stdout:
                     detail = stderr or "no stderr output"
                     raise RuntimeError(self._normalize_provider_error(detail))
@@ -284,6 +394,17 @@ class GPTFieldExtractor:
                 return self._validate_payload_obj(payload)
             except Exception as exc:
                 last_error = exc
+                self._emit_event(
+                    "model.extract.attempt_failed",
+                    job_id=job_id,
+                    provider=self.provider,
+                    model=self.model,
+                    transport="kimi_cli",
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    retrying=attempt < self.max_retries,
+                    error=self._normalize_provider_error(exc),
+                )
                 if attempt >= self.max_retries:
                     break
                 time.sleep(self.retry_delay_ms / 1000)
@@ -412,6 +533,84 @@ class GPTFieldExtractor:
     @staticmethod
     def _normalize_provider_error(detail: Any) -> str:
         return summarize_model_error(detail)
+
+    def _emit_event(self, event_type: str, **payload: Any) -> None:
+        self._append_file_event(event_type, payload)
+        logger = self._event_logger
+        if not callable(logger):
+            return
+        try:
+            logger(event_type, payload)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resolve_file_log_path(raw_path: str) -> Path:
+        if raw_path:
+            return Path(raw_path).expanduser()
+        return Path(__file__).resolve().parents[2] / "data" / "logs" / "gpt_extractor.log"
+
+    def _append_file_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            self.file_log_path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "event_type": event_type,
+                "payload": payload,
+            }
+            with self.file_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str))
+                handle.write("\n")
+        except Exception:
+            pass
+
+    def _json_log_payload(self, field_name: str, value: Any) -> dict[str, Any]:
+        return self._text_log_payload(field_name, self._safe_json_dumps(value))
+
+    def _text_log_payload(self, field_name: str, value: Any) -> dict[str, Any]:
+        text = str(value or "")
+        payload = {
+            f"{field_name}_chars": len(text),
+            f"{field_name}_sha1": hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest(),
+        }
+        if self.log_model_payloads:
+            truncated = False
+            if self.log_model_payload_max_chars and len(text) > self.log_model_payload_max_chars:
+                text = text[: self.log_model_payload_max_chars]
+                truncated = True
+            payload[field_name] = text
+            if truncated:
+                payload[f"{field_name}_truncated"] = True
+        return payload
+
+    @staticmethod
+    def _safe_json_dumps(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            return json.dumps(value, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _redact_cli_command(command: list[str]) -> list[str]:
+        if not command:
+            return []
+        redacted: list[str] = []
+        redact_next = False
+        for token in command:
+            text = str(token or "")
+            if redact_next:
+                redacted.append("<redacted>")
+                redact_next = False
+                continue
+            if text in {"--config", "--prompt", "-p", "--command", "-c"}:
+                redacted.append(text)
+                redact_next = True
+                continue
+            if text.startswith("--config="):
+                redacted.append("--config=<redacted>")
+                continue
+            redacted.append(text)
+        return redacted
 
     def _effective_kimi_cli_config(self) -> str:
         # Prefer explicit config, but normalize legacy short forms to avoid

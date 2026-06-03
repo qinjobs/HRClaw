@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +33,7 @@ class PaddleOCRBackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             file_path = Path(tmpdir) / "scanned.pdf"
             file_path.write_bytes(b"%PDF-1.4 fake scanned pdf")
-            with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.dict(os.environ, {"SCREENING_RESUME_OCR_USE_SUBPROCESS": "0"}, clear=True):
                 with mock.patch("src.screening.phase2_imports.importlib.import_module", return_value=fake_module):
                     backend = PaddleOCRBackend()
                     text = backend.extract_text(file_path)
@@ -88,6 +89,41 @@ class PaddleOCRBackendTests(unittest.TestCase):
                 backend = PaddleOCRBackend()
                 backend._apply_runtime_compat_flags()
                 self.assertEqual(os.getenv("PADDLE_PDX_CACHE_HOME"), str(explicit_cache))
+
+    def test_extract_text_uses_subprocess_on_windows_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "resume.png"
+            file_path.write_bytes(b"fake-image")
+
+            def fake_run(command, **kwargs):
+                output_path = Path(command[-1])
+                output_path.write_text('{"ok": true, "text": "AI 产品经理"}', encoding="utf-8")
+                self.assertEqual(command[1:4], ["-m", "src.screening.phase2_imports", "--ocr-image"])
+                self.assertEqual(kwargs["env"]["SCREENING_RESUME_OCR_USE_SUBPROCESS"], "0")
+                self.assertEqual(kwargs["cwd"], str(Path(__file__).resolve().parents[1]))
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch("src.screening.phase2_imports.os.name", "nt"):
+                    with mock.patch("src.screening.phase2_imports.subprocess.run", side_effect=fake_run):
+                        backend = PaddleOCRBackend()
+                        text = backend.extract_text(file_path)
+
+        self.assertEqual(text, "AI 产品经理")
+
+    def test_extract_text_raises_runtime_error_when_subprocess_crashes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "resume.png"
+            file_path.write_bytes(b"fake-image")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch("src.screening.phase2_imports.os.name", "nt"):
+                    with mock.patch(
+                        "src.screening.phase2_imports.subprocess.run",
+                        return_value=subprocess.CompletedProcess(["python"], -1073741819, stdout="", stderr="access violation"),
+                    ):
+                        backend = PaddleOCRBackend()
+                        with self.assertRaisesRegex(RuntimeError, "PaddleOCR subprocess failed: access violation"):
+                            backend.extract_text(file_path)
 
 
 if __name__ == "__main__":

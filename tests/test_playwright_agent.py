@@ -130,7 +130,53 @@ class FakeFailingExtractor:
         return extractor.merge_with_fallback(job_id, extracted, fallback_item)
 
 
+class FakeTracingExtractor(FakeExtractor):
+    def __init__(self):
+        self.last_usage = {"provider": "fake", "model": "fake-model", "prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        self._event_logger = None
+
+    def set_event_logger(self, logger):
+        self._event_logger = logger
+
+    def extract_candidate(self, job_id, page_text, screenshot_base64):
+        if callable(self._event_logger):
+            self._event_logger(
+                "model.extract.request",
+                {
+                    "job_id": job_id,
+                    "provider": "fake",
+                    "model": "fake-model",
+                    "request_body_chars": len(page_text or ""),
+                },
+            )
+        return super().extract_candidate(job_id, page_text, screenshot_base64)
+
+
 class PlaywrightAgentTests(unittest.TestCase):
+    def _build_selectors(self):
+        return BossSelectors(
+            search_url="https://www.zhipin.com/web/geek/job",
+            search_keyword_input=("input",),
+            search_city_input=("input",),
+            search_submit=("button",),
+            sort_active=("button.active",),
+            sort_recent=("button.recent",),
+            list_ready=("body",),
+            candidate_card=("article",),
+            candidate_name=("h2",),
+            candidate_title=("h3",),
+            candidate_company=("h4",),
+            candidate_experience=("h5",),
+            candidate_education=("h6",),
+            candidate_location=("h7",),
+            candidate_active_time=("h8",),
+            candidate_link=("a",),
+            candidate_external_id=("[data-id]",),
+            detail_ready=("main",),
+            detail_main_text=("main",),
+            next_page=("button.next",),
+        )
+
     def test_default_agent_runtime_uses_manual_login_mode(self):
         agent = PlaywrightLocalAgent()
         self.assertFalse(agent.runtime.load_storage_state)
@@ -155,28 +201,7 @@ class PlaywrightAgentTests(unittest.TestCase):
 
     def test_collect_candidates_from_local_runtime(self):
         runtime = FakeLocalRuntime()
-        selectors = BossSelectors(
-            search_url="https://www.zhipin.com/web/geek/job",
-            search_keyword_input=("input",),
-            search_city_input=("input",),
-            search_submit=("button",),
-            sort_active=("button.active",),
-            sort_recent=("button.recent",),
-            list_ready=("body",),
-            candidate_card=("article",),
-            candidate_name=("h2",),
-            candidate_title=("h3",),
-            candidate_company=("h4",),
-            candidate_experience=("h5",),
-            candidate_education=("h6",),
-            candidate_location=("h7",),
-            candidate_active_time=("h8",),
-            candidate_link=("a",),
-            candidate_external_id=("[data-id]",),
-            detail_ready=("main",),
-            detail_main_text=("main",),
-            next_page=("button.next",),
-        )
+        selectors = self._build_selectors()
         agent = PlaywrightLocalAgent(runtime=runtime, selectors=selectors, extractor=FakeExtractor())
         self.addCleanup(agent.stop_session)
         agent.start_session()
@@ -201,28 +226,7 @@ class PlaywrightAgentTests(unittest.TestCase):
 
     def test_collect_candidates_falls_back_when_extractor_fails(self):
         runtime = FakeLocalRuntime()
-        selectors = BossSelectors(
-            search_url="https://www.zhipin.com/web/geek/job",
-            search_keyword_input=("input",),
-            search_city_input=("input",),
-            search_submit=("button",),
-            sort_active=("button.active",),
-            sort_recent=("button.recent",),
-            list_ready=("body",),
-            candidate_card=("article",),
-            candidate_name=("h2",),
-            candidate_title=("h3",),
-            candidate_company=("h4",),
-            candidate_experience=("h5",),
-            candidate_education=("h6",),
-            candidate_location=("h7",),
-            candidate_active_time=("h8",),
-            candidate_link=("a",),
-            candidate_external_id=("[data-id]",),
-            detail_ready=("main",),
-            detail_main_text=("main",),
-            next_page=("button.next",),
-        )
+        selectors = self._build_selectors()
         agent = PlaywrightLocalAgent(runtime=runtime, selectors=selectors, extractor=FakeFailingExtractor())
         self.addCleanup(agent.stop_session)
         agent.start_session()
@@ -237,3 +241,32 @@ class PlaywrightAgentTests(unittest.TestCase):
         self.assertFalse(items[0].evidence_map["gpt_extraction_used"])
         self.assertIn("insufficient_quota", items[0].evidence_map["gpt_extraction_error"])
         self.assertTrue(items[0].normalized_fields["testing_evidence"])
+
+    def test_collect_candidates_emits_search_trace_events(self):
+        runtime = FakeLocalRuntime()
+        selectors = self._build_selectors()
+        extractor = FakeTracingExtractor()
+        agent = PlaywrightLocalAgent(runtime=runtime, selectors=selectors, extractor=extractor)
+        logs: list[tuple[str, dict]] = []
+        self.addCleanup(agent.stop_session)
+        agent.set_trace_logger(lambda event_type, payload: logs.append((event_type, payload)))
+        agent.start_session()
+
+        items = agent.collect_candidates(
+            "qa_test_engineer_v1",
+            1,
+            search_config={"keyword": "测试工程师", "city": "北京"},
+            sort_by="active",
+            max_pages=1,
+        )
+
+        self.assertEqual(len(items), 1)
+        event_types = [event_type for event_type, _ in logs]
+        self.assertIn("candidate_collection.started", event_types)
+        self.assertIn("search.page_ready", event_types)
+        self.assertIn("search.filters_applied", event_types)
+        self.assertIn("search.candidate_opening", event_types)
+        self.assertIn("model.extract.request", event_types)
+        self.assertIn("search.candidate_compiled", event_types)
+        self.assertIn("search.collect_completed", event_types)
+        self.assertIn("candidate_collection.completed", event_types)

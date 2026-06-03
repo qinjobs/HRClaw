@@ -160,6 +160,19 @@ INDUSTRY_TAGS = {
     "ai": "AI",
 }
 
+MOJIBAKE_MARKERS = (
+    "锟",
+    "拷",
+    "锟斤拷",
+    "閿",
+    "鎷",
+    "熸",
+    "枻",
+    "嫹",
+    "鈥",
+    "�",
+)
+
 
 CN_NUMBER_MAP = {
     "零": 0,
@@ -258,7 +271,7 @@ def _has_explicit_mojibake_markers(text: str) -> bool:
     raw = str(text or "")
     if not raw.strip():
         return False
-    if "\ufffd" in raw:
+    if any(marker in raw for marker in MOJIBAKE_MARKERS):
         return True
     return re.search(r"[\u00a0-\u024f\u02b0-\u02ff\u0370-\u03ff]", raw) is not None
 
@@ -299,7 +312,7 @@ def looks_like_mojibake(value: Any) -> bool:
         return False
     if not _has_explicit_mojibake_markers(raw):
         return False
-    if "\ufffd" in raw:
+    if any(marker in raw for marker in MOJIBAKE_MARKERS):
         return True
     repaired = repair_text_mojibake(raw)
     return bool(repaired and repaired != raw)

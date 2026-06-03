@@ -1,5 +1,7 @@
+import gc
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,7 +15,8 @@ from src.screening.repositories import add_log
 class LogApiTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmpdir.cleanup)
+        self.addCleanup(self._cleanup_tmpdir)
+        self._original_db_path = db.DB_PATH
         db.DB_PATH = Path(self.tmpdir.name) / "screening.db"
         db.init_db()
 
@@ -22,6 +25,25 @@ class LogApiTests(unittest.TestCase):
         self.api = api
         self.api.init_db()
         self.api.ORCHESTRATOR = ScreeningOrchestrator(browser_agent=MockBrowserAgent())
+
+    def _cleanup_tmpdir(self):
+        try:
+            if hasattr(self, "api") and self.api is not None:
+                self.api.ORCHESTRATOR = None
+            gc.collect()
+            last_error: Exception | None = None
+            for _ in range(5):
+                try:
+                    self.tmpdir.cleanup()
+                    return
+                except PermissionError as exc:
+                    last_error = exc
+                    time.sleep(0.1)
+                    gc.collect()
+            if last_error is not None:
+                raise last_error
+        finally:
+            db.DB_PATH = self._original_db_path
 
     def _make_handler(self, method: str, path: str, payload: dict | None = None):
         raw = json.dumps(payload or {}).encode("utf-8")

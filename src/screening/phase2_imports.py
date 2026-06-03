@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -121,6 +122,11 @@ class PaddleOCRBackend:
             return f"PaddleOCR 不可用：{exc}"
 
     def extract_text(self, file_path: Path) -> str:
+        if self._use_subprocess():
+            return self._extract_text_in_subprocess(file_path)
+        return self._extract_text_direct(file_path)
+
+    def _extract_text_direct(self, file_path: Path) -> str:
         ocr = self._get_ocr()
         try:
             results = list(ocr.predict(input=str(file_path)))
@@ -138,6 +144,87 @@ class PaddleOCRBackend:
         if not merged:
             raise ValueError("PaddleOCR 未识别出可用文本")
         return merged
+
+    def _use_subprocess(self) -> bool:
+        if self.provider in {"none", "off", "disabled"}:
+            return False
+        return _env_flag("SCREENING_RESUME_OCR_USE_SUBPROCESS", os.name == "nt")
+
+    @staticmethod
+    def _repo_root() -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    @staticmethod
+    def _subprocess_timeout_seconds() -> float:
+        raw = str(os.getenv("SCREENING_RESUME_OCR_SUBPROCESS_TIMEOUT_SECONDS", "180") or "180").strip()
+        try:
+            timeout = float(raw)
+        except ValueError:
+            timeout = 180.0
+        return max(5.0, timeout)
+
+    @staticmethod
+    def _subprocess_python() -> str:
+        configured = str(os.getenv("SCREENING_RESUME_OCR_PYTHON", "") or "").strip()
+        return configured or sys.executable
+
+    def _extract_text_in_subprocess(self, file_path: Path) -> str:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "ocr_result.json"
+            env = os.environ.copy()
+            env["SCREENING_RESUME_OCR_USE_SUBPROCESS"] = "0"
+            command = [
+                self._subprocess_python(),
+                "-m",
+                "src.screening.phase2_imports",
+                "--ocr-image",
+                str(file_path),
+                "--output-json",
+                str(output_path),
+            ]
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(self._repo_root()),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._subprocess_timeout_seconds(),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise TimeoutError(
+                    f"PaddleOCR subprocess timed out after {self._subprocess_timeout_seconds():.0f}s"
+                ) from exc
+            payload: dict[str, Any] = {}
+            if output_path.exists():
+                try:
+                    payload = json.loads(output_path.read_text(encoding="utf-8"))
+                except Exception:
+                    payload = {}
+            if completed.returncode != 0:
+                error = str(payload.get("error") or "").strip() or self._summarize_subprocess_failure(completed)
+                raise RuntimeError(f"PaddleOCR subprocess failed: {error}")
+            text = _normalize_text(payload.get("text"))
+            if not text:
+                error = str(payload.get("error") or "").strip() or "PaddleOCR subprocess returned empty text"
+                raise ValueError(error)
+            return text
+
+    @staticmethod
+    def _summarize_subprocess_failure(completed: subprocess.CompletedProcess[str]) -> str:
+        parts: list[str] = []
+        if completed.stderr:
+            parts.append(completed.stderr.strip())
+        if completed.stdout:
+            parts.append(completed.stdout.strip())
+        detail = "\n".join(part for part in parts if part).strip()
+        if detail:
+            compact = re.sub(r"\s+", " ", detail)
+            return compact[-600:]
+        return f"exit code {completed.returncode}"
 
     def _load_module(self):
         if self._module is not None:
@@ -416,6 +503,29 @@ class ResumeDocumentParser:
         if not self.ocr_backend.enabled():
             raise ValueError(self.ocr_backend.unavailable_reason() or "OCR 不可用")
         return self.ocr_backend.extract_text(file_path)
+
+
+def _run_ocr_cli(argv: list[str]) -> int:
+    if len(argv) != 5 or argv[1] != "--ocr-image" or argv[3] != "--output-json":
+        return 2
+    image_path = Path(argv[2])
+    output_path = Path(argv[4])
+    payload: dict[str, Any]
+    try:
+        backend = PaddleOCRBackend()
+        text = backend._extract_text_direct(image_path)
+        payload = {"ok": True, "text": text}
+        exit_code = 0
+    except Exception as exc:
+        payload = {"ok": False, "error": str(exc)}
+        exit_code = 1
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_ocr_cli(sys.argv))
 
 
 def shutil_which(command: str) -> str | None:

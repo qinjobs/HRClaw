@@ -59,6 +59,19 @@ class ScreeningOrchestrator:
             "candidates_with_usage": 0,
         }
         try:
+            add_log(
+                task_id,
+                "info",
+                "task.run_started",
+                {
+                    "job_id": task["job_id"],
+                    "search_mode": task.get("search_mode"),
+                    "sort_by": task.get("sort_by"),
+                    "max_candidates": task.get("max_candidates"),
+                    "max_pages": task.get("max_pages"),
+                    "search_config": task.get("search_config", {}),
+                },
+            )
             for status in (
                 TaskStatus.BOOTING_BROWSER,
                 TaskStatus.LOGGING_IN,
@@ -75,14 +88,23 @@ class ScreeningOrchestrator:
             if callable(set_trace_logger):
                 set_trace_logger(lambda event_type, payload: add_log(task_id, "info", event_type, payload))
 
-            for candidate in self.browser_agent.collect_candidates(
+            add_log(task_id, "info", "task.candidate_collection_started", {"browser_session_id": session_id})
+            collected_candidates = self.browser_agent.collect_candidates(
                 task["job_id"],
                 task["max_candidates"],
                 search_mode=task.get("search_mode"),
                 search_config=task.get("search_config", {}),
                 sort_by=task.get("sort_by"),
                 max_pages=task.get("max_pages", 1),
-            ):
+            )
+            add_log(
+                task_id,
+                "info",
+                "task.candidate_collection_completed",
+                {"candidate_count": len(collected_candidates)},
+            )
+
+            for candidate in collected_candidates:
                 current_status = self._transition(task_id, current_status, TaskStatus.OPENING_CANDIDATE)
                 add_log(task_id, "info", "candidate.open", {"external_id": candidate.external_id})
 
@@ -95,6 +117,16 @@ class ScreeningOrchestrator:
                     candidate.screenshot_path,
                     candidate.raw_summary or "",
                     candidate.evidence_map,
+                )
+                add_log(
+                    task_id,
+                    "info",
+                    "candidate.snapshot_saved",
+                    {
+                        "candidate_id": candidate_id,
+                        "snapshot_id": snapshot_id,
+                        "screenshot_path": candidate.screenshot_path,
+                    },
                 )
 
                 current_status = self._transition(task_id, current_status, TaskStatus.EXTRACTING_FIELDS)
@@ -133,6 +165,17 @@ class ScreeningOrchestrator:
                         "total_score": score.total_score,
                         "decision": score.decision.value,
                         "review_reasons": score.review_reasons,
+                    },
+                )
+                add_log(
+                    task_id,
+                    "info",
+                    "candidate.score_saved",
+                    {
+                        "candidate_id": candidate_id,
+                        "decision": score.decision.value,
+                        "total_score": score.total_score,
+                        "hard_filter_pass": score.hard_filter_pass,
                     },
                 )
                 if candidate.evidence_map.get("auto_greet_attempted") or candidate.evidence_map.get("auto_greet_clicked"):
@@ -203,7 +246,7 @@ class ScreeningOrchestrator:
             }
         except Exception as exc:
             mark_task_finished(task_id, TaskStatus.FAILED.value)
-            add_log(task_id, "error", "task.failed", {"error": str(exc)})
+            add_log(task_id, "error", "task.failed", {"status": current_status, "error": str(exc)})
             raise
         finally:
             clear_trace_logger = getattr(self.browser_agent, "set_trace_logger", None)
